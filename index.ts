@@ -218,14 +218,8 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
       return;
     }
 
-    // Agent succeeded — cancel any pending fallback timer from a previous error
-    if (lastAssistant.stopReason !== "error") {
-      if (progressTimer || countdownInterval) {
-        log.debug("Agent succeeded — cancelling stale fallback timer");
-        clearFallbackState(ctx);
-      }
-      return;
-    }
+    // Only trigger on actual errors
+    if (lastAssistant.stopReason !== "error") return;
 
     const errorMessage: string = lastAssistant.errorMessage || "";
     log.debug(`agent_end with error: ${errorMessage}`);
