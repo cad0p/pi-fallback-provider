@@ -17,8 +17,10 @@
  *   - xilnick/pi-fallback-provider (caching, cooldown)
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { getAgentDir } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { matchesKey } from "@earendil-works/pi-tui";
+import type { TUI } from "@earendil-works/pi-tui";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -90,9 +92,25 @@ let countdownInterval: ReturnType<typeof setInterval> | null = null;
 /** Captured ctx for countdown updates. */
 let capturedCtx: ExtensionContext | null = null;
 
+/** TUI reference for focus detection. */
+let tuiRef: TUI | null = null;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+function clearFallbackState(ctx?: ExtensionContext): void {
+  if (progressTimer) {
+    clearTimeout(progressTimer);
+    progressTimer = null;
+  }
+  if (countdownInterval) {
+    clearInterval(countdownInterval);
+    countdownInterval = null;
+  }
+  (capturedCtx || ctx)?.ui.setStatus("pi-fallback", undefined);
+  capturedCtx = null;
+}
 
 function modelKey(provider: string, id: string): string {
   return `${provider}/${id}`;
@@ -219,17 +237,10 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
 
   // Detect progress: if the agent starts a new turn, cancel the timer.
   pi.on("turn_start", async () => {
-    if (progressTimer) {
-      log.debug("turn_start detected — cancelling progress timer");
-      clearTimeout(progressTimer);
-      progressTimer = null;
+    if (progressTimer || countdownInterval) {
+      log.debug("turn_start detected — cancelling fallback");
+      clearFallbackState();
     }
-    if (countdownInterval) {
-      clearInterval(countdownInterval);
-      countdownInterval = null;
-    }
-    capturedCtx?.ui.setStatus("pi-fallback", undefined);
-    capturedCtx = null;
   });
 
   // Main hook: when agent ends with an error, start the progress timer.
@@ -241,16 +252,11 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
 
     if (!lastAssistant) return;
 
-    // User pressed ESC — cancel any pending fallback
+    // User pressed ESC during agent run — cancel any pending fallback
     if (lastAssistant.stopReason === "aborted") {
       if (progressTimer || countdownInterval) {
-        log.debug("User aborted — cancelling fallback timer");
-        clearTimeout(progressTimer);
-        progressTimer = null;
-        if (countdownInterval) clearInterval(countdownInterval);
-        countdownInterval = null;
-        ctx.ui.setStatus("pi-fallback", undefined);
-        capturedCtx = null;
+        log.debug("User aborted — cancelling fallback");
+        clearFallbackState(ctx);
       }
       return;
     }
@@ -284,11 +290,7 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
 
     // Start the progress timer
     progressTimer = setTimeout(() => {
-      progressTimer = null;
-      if (countdownInterval) clearInterval(countdownInterval);
-      countdownInterval = null;
-      capturedCtx?.ui.setStatus("pi-fallback", undefined);
-      capturedCtx = null;
+      clearFallbackState();
       log.debug("Progress timer expired — cycling model");
       cycleModel(ctx);
     }, PROGRESS_TIMEOUT_MS);
@@ -296,18 +298,27 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
     log.debug(`Progress timer started (${PROGRESS_TIMEOUT_MS}ms)`);
   });
 
+  // Capture TUI reference and set up ESC handler
+  pi.on("session_start", async (_event, ctx) => {
+    ctx.ui.setWidget("__pi-fallback-tui-probe", (tui: TUI) => {
+      tuiRef = tui;
+      return { render: () => [] };
+    }, { placement: "aboveEditor" });
+    ctx.ui.setWidget("__pi-fallback-tui-probe", undefined);
+
+    ctx.ui.onTerminalInput((data: string) => {
+      if (!matchesKey(data, "escape")) return;
+      if (!progressTimer && !countdownInterval) return;
+
+      log.debug("ESC pressed — cancelling fallback timer");
+      clearFallbackState(ctx);
+      return { consume: true };
+    });
+  });
+
   // Reset state on session switch
   pi.on("session_shutdown", async () => {
-    if (progressTimer) {
-      clearTimeout(progressTimer);
-      progressTimer = null;
-    }
-    if (countdownInterval) {
-      clearInterval(countdownInterval);
-      countdownInterval = null;
-    }
-    capturedCtx?.ui.setStatus("pi-fallback", undefined);
-    capturedCtx = null;
+    clearFallbackState();
     lastUserPrompt = null;
     nextModelIndex = 0;
   });
