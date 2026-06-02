@@ -1,0 +1,21 @@
+{
+  "name": "@cad0p/pi-fallback-provider",
+  "version": "0.1.0",
+  "description": "Automatic model cycling when the pi agent gets stuck on errors",
+  "main": "index.ts",
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "keywords": [
+    "pi-extension",
+    "pi-package",
+    "pi",
+    "model-failover",
+    "model-cycling",
+    "high-availability"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  }
+}

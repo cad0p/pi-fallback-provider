@@ -1,0 +1,294 @@
+/**
+ * pi-fallback-provider — Automatic model cycling when the agent gets stuck.
+ *
+ * Unlike transport-level fallbacks, this hooks into `agent_end` and detects
+ * when the agent has stopped making progress after an error. It cycles
+ * through all available (authenticated) models, re-sending the last user
+ * prompt each time.
+ *
+ * How it works:
+ *   1. `agent_end` fires with stopReason === "error" → start timer
+ *   2. `turn_start` fires → cancel timer (pi is retrying / making progress)
+ *   3. Timer expires → cycle to next model, re-send last user prompt
+ *
+ * Design inspired by:
+ *   - georgebashi/pi-retry (agent_end hook, progress detection)
+ *   - nicobailon/pi-model-switch (pi.setModel, modelRegistry.getAvailable)
+ *   - xilnick/pi-fallback-provider (caching, cooldown)
+ */
+
+import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+/** How long to wait after an error before cycling (ms).
+ *  Must be longer than pi's built-in retry window (default: 3 retries × 2s
+ *  base delay with exponential backoff = ~14s). We use 20s to give pi's
+ *  retries a chance to complete. */
+const PROGRESS_TIMEOUT_MS = 20_000;
+
+/** Cooldown: skip a model that failed within this window (ms). */
+const FAILED_COOLDOWN_MS = 5 * 60 * 1000;
+
+/** Cache TTL: prefer the last working model for this long (ms). */
+const CACHE_TTL_MS = 60 * 60 * 1000;
+
+/** Debug logging. */
+const DEBUG =
+  process.env.PI_FALLBACK_DEBUG === "true" ||
+  process.env.PI_FALLBACK_DEBUG === "1";
+
+const log = {
+  debug: (...args: unknown[]) => DEBUG && console.log("[pi-fallback]", ...args),
+  warn: (...args: unknown[]) => console.warn("[pi-fallback]", ...args),
+  error: (...args: unknown[]) => console.error("[pi-fallback]", ...args),
+};
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+
+interface CachedModel {
+  provider: string;
+  modelId: string;
+  timestamp: number;
+}
+
+interface FailedEntry {
+  failedAt: number;
+}
+
+/** Last user prompt text, captured from `input` events. */
+let lastUserPrompt: string | null = null;
+
+/** Active progress timer. */
+let progressTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Last working model (cached). */
+let cachedModel: CachedModel | null = null;
+
+/** Models that recently failed. */
+const failedModels = new Map<string, FailedEntry>();
+
+/** Index of the next model to try in the cycling order. */
+let nextModelIndex = 0;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function modelKey(provider: string, id: string): string {
+  return `${provider}/${id}`;
+}
+
+function isFailed(provider: string, id: string): boolean {
+  const entry = failedModels.get(modelKey(provider, id));
+  if (!entry) return false;
+  if (Date.now() - entry.failedAt > FAILED_COOLDOWN_MS) {
+    failedModels.delete(modelKey(provider, id));
+    return false;
+  }
+  return true;
+}
+
+function markFailed(provider: string, id: string): void {
+  failedModels.set(modelKey(provider, id), { failedAt: Date.now() });
+}
+
+function markSucceeded(provider: string, id: string): void {
+  cachedModel = { provider, modelId: id, timestamp: Date.now() };
+  failedModels.delete(modelKey(provider, id));
+}
+
+/** Build the ordered list of models to try.
+ *  Order: cached (if fresh) → others (round-robin from nextModelIndex).
+ *  Skips: current model, recently failed models. */
+function buildModelOrder(
+  available: Array<{ provider: string; id: string }>,
+  currentProvider: string,
+  currentId: string,
+): Array<{ provider: string; id: string }> {
+  const order: Array<{ provider: string; id: string }> = [];
+
+  // 1. Cached model (if fresh and not current)
+  if (
+    cachedModel &&
+    Date.now() - cachedModel.timestamp < CACHE_TTL_MS &&
+    !(cachedModel.provider === currentProvider && cachedModel.modelId === currentId)
+  ) {
+    const found = available.find(
+      (m) => m.provider === cachedModel!.provider && m.id === cachedModel!.modelId,
+    );
+    if (found && !isFailed(found.provider, found.id)) {
+      order.push(found);
+    }
+  }
+
+  // 2. Remaining models, round-robin from nextModelIndex
+  const remaining = available.filter(
+    (m) =>
+      !(m.provider === currentProvider && m.id === currentId) &&
+      !order.some((o) => o.provider === m.provider && o.id === m.id),
+  );
+
+  // Rotate so we don't always start from the same model
+  const start = nextModelIndex % remaining.length;
+  for (let i = 0; i < remaining.length; i++) {
+    const idx = (start + i) % remaining.length;
+    const m = remaining[idx];
+    if (!isFailed(m.provider, m.id)) {
+      order.push(m);
+    }
+  }
+
+  // 3. Failed models as last resort (expired cooldown already cleared above)
+  for (const m of remaining) {
+    if (!order.some((o) => o.provider === m.provider && o.id === m.id)) {
+      order.push(m);
+    }
+  }
+
+  return order;
+}
+
+// ---------------------------------------------------------------------------
+// Extension
+// ---------------------------------------------------------------------------
+
+export default function piFallbackProvider(pi: ExtensionAPI) {
+  log.debug("Loading extension");
+
+  // Capture the last user prompt so we can re-send it after switching models.
+  pi.on("input", async (event) => {
+    if (event.source === "interactive" || event.source === "rpc") {
+      lastUserPrompt = event.text;
+    }
+  });
+
+  // Detect progress: if the agent starts a new turn, cancel the timer.
+  pi.on("turn_start", async () => {
+    if (progressTimer) {
+      log.debug("turn_start detected — cancelling progress timer");
+      clearTimeout(progressTimer);
+      progressTimer = null;
+    }
+  });
+
+  // Main hook: when agent ends with an error, start the progress timer.
+  pi.on("agent_end", async (event, ctx) => {
+    // Find the last assistant message
+    const lastAssistant = [...event.messages]
+      .reverse()
+      .find((m: any) => m.role === "assistant") as any;
+
+    if (!lastAssistant) return;
+
+    // Only trigger on actual errors, NOT on user aborts (ESC)
+    if (lastAssistant.stopReason !== "error") return;
+
+    const errorMessage: string = lastAssistant.errorMessage || "";
+    log.debug(`agent_end with error: ${errorMessage}`);
+
+    // Clear any existing timer
+    if (progressTimer) {
+      clearTimeout(progressTimer);
+    }
+
+    // Start the progress timer
+    progressTimer = setTimeout(() => {
+      progressTimer = null;
+      log.debug("Progress timer expired — cycling model");
+      cycleModel(ctx);
+    }, PROGRESS_TIMEOUT_MS);
+
+    log.debug(`Progress timer started (${PROGRESS_TIMEOUT_MS}ms)`);
+  });
+
+  // Reset state on session switch
+  pi.on("session_shutdown", async () => {
+    if (progressTimer) {
+      clearTimeout(progressTimer);
+      progressTimer = null;
+    }
+    lastUserPrompt = null;
+    nextModelIndex = 0;
+  });
+
+  // Register a manual /cycle-next command for testing
+  pi.registerCommand("cycle-model", {
+    description: "Cycle to the next available model (manual trigger)",
+    handler: async (_args, ctx) => {
+      await cycleModel(ctx);
+    },
+  });
+
+  // Core cycling logic
+  async function cycleModel(ctx: ExtensionContext): Promise<void> {
+    const current = ctx.model;
+    if (!current) {
+      log.warn("No current model — cannot cycle");
+      return;
+    }
+
+    const available = ctx.modelRegistry.getAvailable();
+    if (available.length <= 1) {
+      log.warn("Only one model available — cannot cycle");
+      ctx.ui.notify("Only one model available, cannot cycle.", "warning");
+      return;
+    }
+
+    const order = buildModelOrder(available, current.provider, current.id);
+    if (order.length === 0) {
+      log.warn("No models available to cycle to");
+      ctx.ui.notify("All models on cooldown, no fallback available.", "error");
+      return;
+    }
+
+    log.debug(`Cycling: trying ${order.length} models starting with ${modelKey(order[0].provider, order[0].id)}`);
+
+    for (const candidate of order) {
+      const key = modelKey(candidate.provider, candidate.id);
+      log.debug(`Trying: ${key}`);
+
+      const model = ctx.modelRegistry.find(candidate.provider, candidate.id);
+      if (!model) {
+        log.warn(`Model not found in registry: ${key}`);
+        continue;
+      }
+
+      let success: boolean;
+      try {
+        success = await pi.setModel(model);
+      } catch (err) {
+        log.warn(`setModel failed for ${key}: ${err}`);
+        success = false;
+      }
+
+      if (!success) {
+        log.warn(`No auth for ${key}, skipping`);
+        markFailed(candidate.provider, candidate.id);
+        continue;
+      }
+
+      // Success — model is set
+      markSucceeded(candidate.provider, candidate.id);
+      nextModelIndex = order.indexOf(candidate) + 1;
+
+      ctx.ui.notify(`Switched to ${key} (previous model failed)`, "info");
+      log.debug(`Switched to ${key}`);
+
+      // Re-send the last user prompt to kick off a new agent run
+      if (lastUserPrompt) {
+        log.debug(`Re-sending last user prompt`);
+        pi.sendUserMessage(lastUserPrompt);
+      }
+      return;
+    }
+
+    // All candidates failed
+    log.error("All model candidates failed");
+    ctx.ui.notify("All fallback models exhausted.", "error");
+  }
+}
