@@ -18,6 +18,9 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -34,6 +37,9 @@ const FAILED_COOLDOWN_MS = 5 * 60 * 1000;
 
 /** Cache TTL: prefer the last working model for this long (ms). */
 const CACHE_TTL_MS = 60 * 60 * 1000;
+
+/** Path to pi settings file. */
+const SETTINGS_PATH = join(homedir(), ".pi", "agent", "settings.json");
 
 /** Debug logging. */
 const DEBUG =
@@ -69,6 +75,9 @@ let progressTimer: ReturnType<typeof setTimeout> | null = null;
 /** Last working model (cached). */
 let cachedModel: CachedModel | null = null;
 
+/** Scoped models from settings.json (enabledModels). */
+let scopedModels: string[] | null = null;
+
 /** Models that recently failed. */
 const failedModels = new Map<string, FailedEntry>();
 
@@ -102,15 +111,49 @@ function markSucceeded(provider: string, id: string): void {
   failedModels.delete(modelKey(provider, id));
 }
 
+/**
+ * Load scoped models from settings.json (enabledModels field).
+ * Returns null if no enabledModels configured (falls back to all available).
+ */
+function loadScopedModels(): string[] | null {
+  try {
+    const raw = readFileSync(SETTINGS_PATH, "utf-8");
+    const settings = JSON.parse(raw);
+    if (Array.isArray(settings.enabledModels) && settings.enabledModels.length > 0) {
+      log.debug(`Loaded ${settings.enabledModels.length} scoped models from settings`);
+      return settings.enabledModels;
+    }
+  } catch (err) {
+    log.warn(`Could not read settings from ${SETTINGS_PATH}: ${err}`);
+  }
+  return null;
+}
+
 /** Build the ordered list of models to try.
  *  Order: cached (if fresh) → others (round-robin from nextModelIndex).
- *  Skips: current model, recently failed models. */
+ *  Skips: current model, recently failed models.
+ *  Filters: only scoped models if enabledModels is configured. */
 function buildModelOrder(
   available: Array<{ provider: string; id: string }>,
   currentProvider: string,
   currentId: string,
 ): Array<{ provider: string; id: string }> {
   const order: Array<{ provider: string; id: string }> = [];
+
+  // 0. Filter to scoped models if enabledModels is configured
+  let filtered = available;
+  if (scopedModels && scopedModels.length > 0) {
+    filtered = available.filter((m) =>
+      scopedModels!.some((s) => {
+        const [sp, sid] = s.split("/");
+        return m.provider === sp && m.id === sid;
+      })
+    );
+    if (filtered.length === 0) {
+      log.warn("No scoped models available for fallback, falling back to all available");
+      filtered = available;
+    }
+  }
 
   // 1. Cached model (if fresh and not current)
   if (
@@ -127,7 +170,7 @@ function buildModelOrder(
   }
 
   // 2. Remaining models, round-robin from nextModelIndex
-  const remaining = available.filter(
+  const remaining = filtered.filter(
     (m) =>
       !(m.provider === currentProvider && m.id === currentId) &&
       !order.some((o) => o.provider === m.provider && o.id === m.id),
@@ -144,7 +187,7 @@ function buildModelOrder(
   }
 
   // 3. Failed models as last resort (expired cooldown already cleared above)
-  for (const m of remaining) {
+  for (const m of filtered) {
     if (!order.some((o) => o.provider === m.provider && o.id === m.id)) {
       order.push(m);
     }
@@ -159,6 +202,7 @@ function buildModelOrder(
 
 export default function piFallbackProvider(pi: ExtensionAPI) {
   log.debug("Loading extension");
+  scopedModels = loadScopedModels();
 
   // Capture the last user prompt so we can re-send it after switching models.
   pi.on("input", async (event) => {
