@@ -142,8 +142,20 @@ function buildModelOrder(
     }
   }
 
+  // Order filtered models to match enabledModels order
+  const ordered = scopedModels
+    ? scopedModels
+        .map((s) => {
+          const slash = s.indexOf("/");
+          const sp = slash === -1 ? "" : s.slice(0, slash);
+          const sid = slash === -1 ? s : s.slice(slash + 1);
+          return filtered.find((m) => m.provider === sp && m.id === sid);
+        })
+        .filter((m): m is NonNullable<typeof m> => m != null)
+    : filtered;
+
   // Exclude current model
-  const remaining = filtered.filter(
+  const remaining = ordered.filter(
     (m) => !(m.provider === currentProvider && m.id === currentId),
   );
 
