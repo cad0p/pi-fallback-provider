@@ -18,8 +18,8 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { getAgentDir } from "@mariozechner/pi-coding-agent";
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -39,7 +39,7 @@ const FAILED_COOLDOWN_MS = 5 * 60 * 1000;
 const CACHE_TTL_MS = 60 * 60 * 1000;
 
 /** Path to pi settings file. */
-const SETTINGS_PATH = join(homedir(), ".pi", "agent", "settings.json");
+const SETTINGS_PATH = join(getAgentDir(), "settings.json");
 
 /** Debug logging. */
 const DEBUG =
