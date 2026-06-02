@@ -34,11 +34,7 @@ import { join } from "node:path";
  *  retries a chance to complete. */
 const PROGRESS_TIMEOUT_MS = 20_000;
 
-/** Cooldown: skip a model that failed within this window (ms). */
-const FAILED_COOLDOWN_MS = 5 * 60 * 1000;
 
-/** Cache TTL: prefer the last working model for this long (ms). */
-const CACHE_TTL_MS = 60 * 60 * 1000;
 
 /** Path to pi settings file. */
 const SETTINGS_PATH = join(getAgentDir(), "settings.json");
@@ -58,15 +54,7 @@ const log = {
 // State
 // ---------------------------------------------------------------------------
 
-interface CachedModel {
-  provider: string;
-  modelId: string;
-  timestamp: number;
-}
 
-interface FailedEntry {
-  failedAt: number;
-}
 
 /** Last user prompt text, captured from `input` events. */
 let lastUserPrompt: string | null = null;
@@ -74,17 +62,11 @@ let lastUserPrompt: string | null = null;
 /** Active progress timer. */
 let progressTimer: ReturnType<typeof setTimeout> | null = null;
 
-/** Last working model (cached). */
-let cachedModel: CachedModel | null = null;
-
 /** Scoped models from settings.json (enabledModels). */
 let scopedModels: string[] | null = null;
 
-/** Models that recently failed. */
-const failedModels = new Map<string, FailedEntry>();
-
-/** Index of the next model to try in the cycling order. */
-let nextModelIndex = 0;
+/** Position cursor in the enabledModels array for round-robin. */
+let fallbackCursor = 0;
 
 /** Countdown interval for status bar updates. */
 let countdownInterval: ReturnType<typeof setInterval> | null = null;
@@ -116,25 +98,6 @@ function modelKey(provider: string, id: string): string {
   return `${provider}/${id}`;
 }
 
-function isFailed(provider: string, id: string): boolean {
-  const entry = failedModels.get(modelKey(provider, id));
-  if (!entry) return false;
-  if (Date.now() - entry.failedAt > FAILED_COOLDOWN_MS) {
-    failedModels.delete(modelKey(provider, id));
-    return false;
-  }
-  return true;
-}
-
-function markFailed(provider: string, id: string): void {
-  failedModels.set(modelKey(provider, id), { failedAt: Date.now() });
-}
-
-function markSucceeded(provider: string, id: string): void {
-  cachedModel = { provider, modelId: id, timestamp: Date.now() };
-  failedModels.delete(modelKey(provider, id));
-}
-
 /**
  * Load scoped models from settings.json (enabledModels field).
  * Returns null if no enabledModels configured (falls back to all available).
@@ -153,23 +116,23 @@ function loadScopedModels(): string[] | null {
   return null;
 }
 
-/** Build the ordered list of models to try.
- *  Order: cached (if fresh) → others (round-robin from nextModelIndex).
- *  Skips: current model, recently failed models.
+/** Build the ordered list of models to try (round-robin from lastUsedModel).
+ *  Skips: current model.
  *  Filters: only scoped models if enabledModels is configured. */
 function buildModelOrder(
   available: Array<{ provider: string; id: string }>,
   currentProvider: string,
   currentId: string,
 ): Array<{ provider: string; id: string }> {
-  const order: Array<{ provider: string; id: string }> = [];
-
-  // 0. Filter to scoped models if enabledModels is configured
+  // Filter to scoped models if enabledModels is configured
   let filtered = available;
   if (scopedModels && scopedModels.length > 0) {
     filtered = available.filter((m) =>
       scopedModels!.some((s) => {
-        const [sp, sid] = s.split("/");
+        const slash = s.indexOf("/");
+        if (slash === -1) return m.id === s;
+        const sp = s.slice(0, slash);
+        const sid = s.slice(slash + 1);
         return m.provider === sp && m.id === sid;
       })
     );
@@ -179,44 +142,38 @@ function buildModelOrder(
     }
   }
 
-  // 1. Cached model (if fresh and not current)
-  if (
-    cachedModel &&
-    Date.now() - cachedModel.timestamp < CACHE_TTL_MS &&
-    !(cachedModel.provider === currentProvider && cachedModel.modelId === currentId)
-  ) {
-    const found = available.find(
-      (m) => m.provider === cachedModel!.provider && m.id === cachedModel!.modelId,
-    );
-    if (found && !isFailed(found.provider, found.id)) {
-      order.push(found);
-    }
-  }
+  // Order filtered models to match enabledModels order
+  const ordered = scopedModels
+    ? scopedModels
+        .map((s) => {
+          const slash = s.indexOf("/");
+          const sp = slash === -1 ? "" : s.slice(0, slash);
+          const sid = slash === -1 ? s : s.slice(slash + 1);
+          return filtered.find((m) => m.provider === sp && m.id === sid);
+        })
+        .filter((m): m is NonNullable<typeof m> => m != null)
+    : filtered;
 
-  // 2. Remaining models, round-robin from nextModelIndex
-  const remaining = filtered.filter(
-    (m) =>
-      !(m.provider === currentProvider && m.id === currentId) &&
-      !order.some((o) => o.provider === m.provider && o.id === m.id),
+  // Exclude current model
+  const remaining = ordered.filter(
+    (m) => !(m.provider === currentProvider && m.id === currentId),
   );
 
-  // Rotate so we don't always start from the same model
-  const start = nextModelIndex % remaining.length;
+  log.debug(`ordered[${ordered.length}]: ${ordered.map((m) => modelKey(m.provider, m.id)).join(", ")}`);
+  log.debug(`current=${modelKey(currentProvider, currentId)} cursor=${fallbackCursor}`);
+
+  if (remaining.length === 0) return [];
+
+  // Rotate remaining starting from fallbackCursor
+  const start = fallbackCursor % remaining.length;
+
+  log.debug(`remaining[${remaining.length}]: ${remaining.map((m) => modelKey(m.provider, m.id)).join(", ")}`);
+  log.debug(`start=${start}`);
+
+  const order: Array<{ provider: string; id: string }> = [];
   for (let i = 0; i < remaining.length; i++) {
-    const idx = (start + i) % remaining.length;
-    const m = remaining[idx];
-    if (!isFailed(m.provider, m.id)) {
-      order.push(m);
-    }
+    order.push(remaining[(start + i) % remaining.length]);
   }
-
-  // 3. Failed models as last resort (expired cooldown already cleared above)
-  for (const m of filtered) {
-    if (!order.some((o) => o.provider === m.provider && o.id === m.id)) {
-      order.push(m);
-    }
-  }
-
   return order;
 }
 
@@ -320,7 +277,6 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
   pi.on("session_shutdown", async () => {
     clearFallbackState();
     lastUserPrompt = null;
-    nextModelIndex = 0;
   });
 
   // Register a manual /cycle-next command for testing
@@ -340,6 +296,7 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
     }
 
     const available = ctx.modelRegistry.getAvailable();
+    log.debug(`available[${available.length}]: ${available.map((m) => modelKey(m.provider, m.id)).join(", ")}`);
     if (available.length <= 1) {
       log.warn("Only one model available — cannot cycle");
       ctx.ui.notify("Only one model available, cannot cycle.", "warning");
@@ -349,11 +306,12 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
     const order = buildModelOrder(available, current.provider, current.id);
     if (order.length === 0) {
       log.warn("No models available to cycle to");
-      ctx.ui.notify("All models on cooldown, no fallback available.", "error");
+      ctx.ui.notify("No fallback models available.", "error");
       return;
     }
 
     log.debug(`Cycling: trying ${order.length} models starting with ${modelKey(order[0].provider, order[0].id)}`);
+    log.debug(`order: ${order.map((m) => modelKey(m.provider, m.id)).join(", ")}`);
 
     for (const candidate of order) {
       const key = modelKey(candidate.provider, candidate.id);
@@ -375,13 +333,19 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
 
       if (!success) {
         log.warn(`No auth for ${key}, skipping`);
-        markFailed(candidate.provider, candidate.id);
         continue;
       }
 
-      // Success — model is set
-      markSucceeded(candidate.provider, candidate.id);
-      nextModelIndex = order.indexOf(candidate) + 1;
+      // Success — advance cursor past this model in the enabledModels list
+      if (scopedModels) {
+        const modelIdx = scopedModels.findIndex((s) => {
+          const slash = s.indexOf("/");
+          const sp = slash === -1 ? "" : s.slice(0, slash);
+          const sid = slash === -1 ? s : s.slice(slash + 1);
+          return sp === candidate.provider && sid === candidate.id;
+        });
+        if (modelIdx >= 0) fallbackCursor = (modelIdx + 1) % scopedModels.length;
+      }
 
       ctx.ui.notify(`Switched to ${key} (previous model failed)`, "info");
       log.debug(`Switched to ${key}`);
