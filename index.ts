@@ -129,7 +129,10 @@ function buildModelOrder(
   if (scopedModels && scopedModels.length > 0) {
     filtered = available.filter((m) =>
       scopedModels!.some((s) => {
-        const [sp, sid] = s.split("/");
+        const slash = s.indexOf("/");
+        if (slash === -1) return m.id === s;
+        const sp = s.slice(0, slash);
+        const sid = s.slice(slash + 1);
         return m.provider === sp && m.id === sid;
       })
     );
