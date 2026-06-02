@@ -84,6 +84,12 @@ const failedModels = new Map<string, FailedEntry>();
 /** Index of the next model to try in the cycling order. */
 let nextModelIndex = 0;
 
+/** Countdown interval for status bar updates. */
+let countdownInterval: ReturnType<typeof setInterval> | null = null;
+
+/** Captured ctx for countdown updates. */
+let capturedCtx: ExtensionContext | null = null;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -218,6 +224,12 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
       clearTimeout(progressTimer);
       progressTimer = null;
     }
+    if (countdownInterval) {
+      clearInterval(countdownInterval);
+      countdownInterval = null;
+    }
+    capturedCtx?.ui.setStatus("pi-fallback", undefined);
+    capturedCtx = null;
   });
 
   // Main hook: when agent ends with an error, start the progress timer.
@@ -240,9 +252,29 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
       clearTimeout(progressTimer);
     }
 
+    // Show status bar countdown
+    capturedCtx = ctx;
+    const totalSec = Math.round(PROGRESS_TIMEOUT_MS / 1000);
+    let remainingSec = totalSec;
+    ctx.ui.setStatus("pi-fallback", `⚠ agent error — fallback in ${remainingSec}s (esc to cancel)`);
+
+    countdownInterval = setInterval(() => {
+      remainingSec--;
+      if (remainingSec <= 0) {
+        if (countdownInterval) clearInterval(countdownInterval);
+        countdownInterval = null;
+        return;
+      }
+      capturedCtx?.ui.setStatus("pi-fallback", `⚠ agent error — fallback in ${remainingSec}s (esc to cancel)`);
+    }, 1000);
+
     // Start the progress timer
     progressTimer = setTimeout(() => {
       progressTimer = null;
+      if (countdownInterval) clearInterval(countdownInterval);
+      countdownInterval = null;
+      capturedCtx?.ui.setStatus("pi-fallback", undefined);
+      capturedCtx = null;
       log.debug("Progress timer expired — cycling model");
       cycleModel(ctx);
     }, PROGRESS_TIMEOUT_MS);
@@ -256,6 +288,12 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
       clearTimeout(progressTimer);
       progressTimer = null;
     }
+    if (countdownInterval) {
+      clearInterval(countdownInterval);
+      countdownInterval = null;
+    }
+    capturedCtx?.ui.setStatus("pi-fallback", undefined);
+    capturedCtx = null;
     lastUserPrompt = null;
     nextModelIndex = 0;
   });
