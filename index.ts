@@ -123,58 +123,20 @@ function loadScopedModels(): string[] | null {
   return null;
 }
 
-/** Build the ordered list of models to try (round-robin from lastUsedModel).
- *  Skips: current model.
- *  Filters: only scoped models if enabledModels is configured. */
+/** Build the ordered list of models to try.
+ *  Walks enabledModels from fallbackCursor, skipping the current model. */
 function buildModelOrder(
-  available: Array<{ provider: string; id: string }>,
   currentProvider: string,
   currentId: string,
 ): Array<{ provider: string; id: string }> {
-  // Filter to scoped models if enabledModels is configured
-  let filtered = available;
-  if (scopedModels && scopedModels.length > 0) {
-    filtered = available.filter((m) =>
-      scopedModels!.some((s) => {
-        const { provider: sp, id: sid } = parseModelEntry(s);
-        return m.provider === sp && m.id === sid;
-      })
-    );
-    if (filtered.length === 0) {
-      log.warn("No scoped models available for fallback, falling back to all available");
-      filtered = available;
-    }
-  }
+  const src = scopedModels;
+  if (!src || src.length === 0) return [];
 
-  // Order filtered models to match enabledModels order
-  const ordered = scopedModels
-    ? scopedModels
-        .map((s) => {
-          const { provider: sp, id: sid } = parseModelEntry(s);
-          return filtered.find((m) => m.provider === sp && m.id === sid);
-        })
-        .filter((m): m is NonNullable<typeof m> => m != null)
-    : filtered;
-
-  // Exclude current model
-  const remaining = ordered.filter(
-    (m) => !(m.provider === currentProvider && m.id === currentId),
-  );
-
-  log.debug(`ordered[${ordered.length}]: ${ordered.map((m) => modelKey(m.provider, m.id)).join(", ")}`);
-  log.debug(`current=${modelKey(currentProvider, currentId)} cursor=${fallbackCursor}`);
-
-  if (remaining.length === 0) return [];
-
-  // Walk enabledModels from cursor, picking only models in remaining
   const order: Array<{ provider: string; id: string }> = [];
-  const src = scopedModels || remaining.map((m) => modelKey(m.provider, m.id));
-  for (let i = 0; i < src.length && order.length < remaining.length; i++) {
-    const idx = (fallbackCursor + i) % src.length;
-    const entry = src[idx];
-    const { provider: sp, id: sid } = parseModelEntry(entry);
-    const found = remaining.find((m) => m.provider === sp && m.id === sid);
-    if (found) order.push(found);
+  for (let i = 0; i < src.length; i++) {
+    const { provider, id } = parseModelEntry(src[(fallbackCursor + i) % src.length]);
+    if (provider === currentProvider && id === currentId) continue;
+    order.push({ provider, id });
   }
   return order;
 }
@@ -298,14 +260,13 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
     }
 
     const available = ctx.modelRegistry.getAvailable();
-    log.debug(`available[${available.length}]: ${available.map((m) => modelKey(m.provider, m.id)).join(", ")}`);
     if (available.length <= 1) {
       log.warn("Only one model available — cannot cycle");
       ctx.ui.notify("Only one model available, cannot cycle.", "warning");
       return;
     }
 
-    const order = buildModelOrder(available, current.provider, current.id);
+    const order = buildModelOrder(current.provider, current.id);
     if (order.length === 0) {
       log.warn("No models available to cycle to");
       ctx.ui.notify("No fallback models available.", "error");
