@@ -98,6 +98,13 @@ function modelKey(provider: string, id: string): string {
   return `${provider}/${id}`;
 }
 
+/** Split a "provider/id" string (id may contain slashes). */
+function parseModelEntry(s: string): { provider: string; id: string } {
+  const slash = s.indexOf("/");
+  if (slash === -1) return { provider: "", id: s };
+  return { provider: s.slice(0, slash), id: s.slice(slash + 1) };
+}
+
 /**
  * Load scoped models from settings.json (enabledModels field).
  * Returns null if no enabledModels configured (falls back to all available).
@@ -116,63 +123,20 @@ function loadScopedModels(): string[] | null {
   return null;
 }
 
-/** Build the ordered list of models to try (round-robin from lastUsedModel).
- *  Skips: current model.
- *  Filters: only scoped models if enabledModels is configured. */
+/** Build the ordered list of models to try.
+ *  Walks enabledModels from fallbackCursor, skipping the current model. */
 function buildModelOrder(
-  available: Array<{ provider: string; id: string }>,
   currentProvider: string,
   currentId: string,
 ): Array<{ provider: string; id: string }> {
-  // Filter to scoped models if enabledModels is configured
-  let filtered = available;
-  if (scopedModels && scopedModels.length > 0) {
-    filtered = available.filter((m) =>
-      scopedModels!.some((s) => {
-        const slash = s.indexOf("/");
-        if (slash === -1) return m.id === s;
-        const sp = s.slice(0, slash);
-        const sid = s.slice(slash + 1);
-        return m.provider === sp && m.id === sid;
-      })
-    );
-    if (filtered.length === 0) {
-      log.warn("No scoped models available for fallback, falling back to all available");
-      filtered = available;
-    }
-  }
-
-  // Order filtered models to match enabledModels order
-  const ordered = scopedModels
-    ? scopedModels
-        .map((s) => {
-          const slash = s.indexOf("/");
-          const sp = slash === -1 ? "" : s.slice(0, slash);
-          const sid = slash === -1 ? s : s.slice(slash + 1);
-          return filtered.find((m) => m.provider === sp && m.id === sid);
-        })
-        .filter((m): m is NonNullable<typeof m> => m != null)
-    : filtered;
-
-  // Exclude current model
-  const remaining = ordered.filter(
-    (m) => !(m.provider === currentProvider && m.id === currentId),
-  );
-
-  log.debug(`ordered[${ordered.length}]: ${ordered.map((m) => modelKey(m.provider, m.id)).join(", ")}`);
-  log.debug(`current=${modelKey(currentProvider, currentId)} cursor=${fallbackCursor}`);
-
-  if (remaining.length === 0) return [];
-
-  // Rotate remaining starting from fallbackCursor
-  const start = fallbackCursor % remaining.length;
-
-  log.debug(`remaining[${remaining.length}]: ${remaining.map((m) => modelKey(m.provider, m.id)).join(", ")}`);
-  log.debug(`start=${start}`);
+  const src = scopedModels;
+  if (!src || src.length === 0) return [];
 
   const order: Array<{ provider: string; id: string }> = [];
-  for (let i = 0; i < remaining.length; i++) {
-    order.push(remaining[(start + i) % remaining.length]);
+  for (let i = 0; i < src.length; i++) {
+    const { provider, id } = parseModelEntry(src[(fallbackCursor + i) % src.length]);
+    if (provider === currentProvider && id === currentId) continue;
+    order.push({ provider, id });
   }
   return order;
 }
@@ -296,14 +260,13 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
     }
 
     const available = ctx.modelRegistry.getAvailable();
-    log.debug(`available[${available.length}]: ${available.map((m) => modelKey(m.provider, m.id)).join(", ")}`);
     if (available.length <= 1) {
       log.warn("Only one model available — cannot cycle");
       ctx.ui.notify("Only one model available, cannot cycle.", "warning");
       return;
     }
 
-    const order = buildModelOrder(available, current.provider, current.id);
+    const order = buildModelOrder(current.provider, current.id);
     if (order.length === 0) {
       log.warn("No models available to cycle to");
       ctx.ui.notify("No fallback models available.", "error");
@@ -339,9 +302,7 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
       // Success — advance cursor past this model in the enabledModels list
       if (scopedModels) {
         const modelIdx = scopedModels.findIndex((s) => {
-          const slash = s.indexOf("/");
-          const sp = slash === -1 ? "" : s.slice(0, slash);
-          const sid = slash === -1 ? s : s.slice(slash + 1);
+          const { provider: sp, id: sid } = parseModelEntry(s);
           return sp === candidate.provider && sid === candidate.id;
         });
         if (modelIdx >= 0) fallbackCursor = (modelIdx + 1) % scopedModels.length;
