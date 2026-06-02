@@ -65,8 +65,8 @@ let progressTimer: ReturnType<typeof setTimeout> | null = null;
 /** Scoped models from settings.json (enabledModels). */
 let scopedModels: string[] | null = null;
 
-/** Key of the last model we switched to, for round-robin. */
-let lastUsedModel: string | null = null;
+/** Position cursor in the enabledModels array for round-robin. */
+let fallbackCursor = 0;
 
 /** Countdown interval for status bar updates. */
 let countdownInterval: ReturnType<typeof setInterval> | null = null;
@@ -159,20 +159,16 @@ function buildModelOrder(
     (m) => !(m.provider === currentProvider && m.id === currentId),
   );
 
-  log.debug(`filtered[${filtered.length}]: ${filtered.map((m) => modelKey(m.provider, m.id)).join(", ")}`);
-  log.debug(`current=${modelKey(currentProvider, currentId)}`);
+  log.debug(`ordered[${ordered.length}]: ${ordered.map((m) => modelKey(m.provider, m.id)).join(", ")}`);
+  log.debug(`current=${modelKey(currentProvider, currentId)} cursor=${fallbackCursor}`);
 
   if (remaining.length === 0) return [];
 
-  // Find where lastUsedModel sits, start from the next one
-  let start = 0;
-  if (lastUsedModel) {
-    const idx = remaining.findIndex((m) => modelKey(m.provider, m.id) === lastUsedModel);
-    if (idx >= 0) start = (idx + 1) % remaining.length;
-  }
+  // Rotate remaining starting from fallbackCursor
+  const start = fallbackCursor % remaining.length;
 
   log.debug(`remaining[${remaining.length}]: ${remaining.map((m) => modelKey(m.provider, m.id)).join(", ")}`);
-  log.debug(`lastUsedModel=${lastUsedModel} start=${start}`);
+  log.debug(`start=${start}`);
 
   const order: Array<{ provider: string; id: string }> = [];
   for (let i = 0; i < remaining.length; i++) {
@@ -340,8 +336,16 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
         continue;
       }
 
-      // Success — model is set
-      lastUsedModel = key;
+      // Success — advance cursor past this model in the enabledModels list
+      if (scopedModels) {
+        const modelIdx = scopedModels.findIndex((s) => {
+          const slash = s.indexOf("/");
+          const sp = slash === -1 ? "" : s.slice(0, slash);
+          const sid = slash === -1 ? s : s.slice(slash + 1);
+          return sp === candidate.provider && sid === candidate.id;
+        });
+        if (modelIdx >= 0) fallbackCursor = (modelIdx + 1) % scopedModels.length;
+      }
 
       ctx.ui.notify(`Switched to ${key} (previous model failed)`, "info");
       log.debug(`Switched to ${key}`);
