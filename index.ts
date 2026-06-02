@@ -241,7 +241,21 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
 
     if (!lastAssistant) return;
 
-    // Only trigger on actual errors, NOT on user aborts (ESC)
+    // User pressed ESC — cancel any pending fallback
+    if (lastAssistant.stopReason === "aborted") {
+      if (progressTimer || countdownInterval) {
+        log.debug("User aborted — cancelling fallback timer");
+        clearTimeout(progressTimer);
+        progressTimer = null;
+        if (countdownInterval) clearInterval(countdownInterval);
+        countdownInterval = null;
+        ctx.ui.setStatus("pi-fallback", undefined);
+        capturedCtx = null;
+      }
+      return;
+    }
+
+    // Only trigger on actual errors
     if (lastAssistant.stopReason !== "error") return;
 
     const errorMessage: string = lastAssistant.errorMessage || "";
