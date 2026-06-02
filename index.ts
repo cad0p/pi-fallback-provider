@@ -147,6 +147,9 @@ function buildModelOrder(
     (m) => !(m.provider === currentProvider && m.id === currentId),
   );
 
+  log.debug(`filtered[${filtered.length}]: ${filtered.map((m) => modelKey(m.provider, m.id)).join(", ")}`);
+  log.debug(`current=${modelKey(currentProvider, currentId)}`);
+
   if (remaining.length === 0) return [];
 
   // Find where lastUsedModel sits, start from the next one
@@ -155,6 +158,9 @@ function buildModelOrder(
     const idx = remaining.findIndex((m) => modelKey(m.provider, m.id) === lastUsedModel);
     if (idx >= 0) start = (idx + 1) % remaining.length;
   }
+
+  log.debug(`remaining[${remaining.length}]: ${remaining.map((m) => modelKey(m.provider, m.id)).join(", ")}`);
+  log.debug(`lastUsedModel=${lastUsedModel} start=${start}`);
 
   const order: Array<{ provider: string; id: string }> = [];
   for (let i = 0; i < remaining.length; i++) {
@@ -282,6 +288,7 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
     }
 
     const available = ctx.modelRegistry.getAvailable();
+    log.debug(`available[${available.length}]: ${available.map((m) => modelKey(m.provider, m.id)).join(", ")}`);
     if (available.length <= 1) {
       log.warn("Only one model available — cannot cycle");
       ctx.ui.notify("Only one model available, cannot cycle.", "warning");
@@ -296,6 +303,7 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
     }
 
     log.debug(`Cycling: trying ${order.length} models starting with ${modelKey(order[0].provider, order[0].id)}`);
+    log.debug(`order: ${order.map((m) => modelKey(m.provider, m.id)).join(", ")}`);
 
     for (const candidate of order) {
       const key = modelKey(candidate.provider, candidate.id);
