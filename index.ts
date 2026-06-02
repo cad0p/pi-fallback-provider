@@ -98,6 +98,13 @@ function modelKey(provider: string, id: string): string {
   return `${provider}/${id}`;
 }
 
+/** Split a "provider/id" string (id may contain slashes). */
+function parseModelEntry(s: string): { provider: string; id: string } {
+  const slash = s.indexOf("/");
+  if (slash === -1) return { provider: "", id: s };
+  return { provider: s.slice(0, slash), id: s.slice(slash + 1) };
+}
+
 /**
  * Load scoped models from settings.json (enabledModels field).
  * Returns null if no enabledModels configured (falls back to all available).
@@ -129,10 +136,7 @@ function buildModelOrder(
   if (scopedModels && scopedModels.length > 0) {
     filtered = available.filter((m) =>
       scopedModels!.some((s) => {
-        const slash = s.indexOf("/");
-        if (slash === -1) return m.id === s;
-        const sp = s.slice(0, slash);
-        const sid = s.slice(slash + 1);
+        const { provider: sp, id: sid } = parseModelEntry(s);
         return m.provider === sp && m.id === sid;
       })
     );
@@ -146,9 +150,7 @@ function buildModelOrder(
   const ordered = scopedModels
     ? scopedModels
         .map((s) => {
-          const slash = s.indexOf("/");
-          const sp = slash === -1 ? "" : s.slice(0, slash);
-          const sid = slash === -1 ? s : s.slice(slash + 1);
+          const { provider: sp, id: sid } = parseModelEntry(s);
           return filtered.find((m) => m.provider === sp && m.id === sid);
         })
         .filter((m): m is NonNullable<typeof m> => m != null)
@@ -170,9 +172,7 @@ function buildModelOrder(
   for (let i = 0; i < src.length && order.length < remaining.length; i++) {
     const idx = (fallbackCursor + i) % src.length;
     const entry = src[idx];
-    const slash = entry.indexOf("/");
-    const sp = slash === -1 ? "" : entry.slice(0, slash);
-    const sid = slash === -1 ? entry : entry.slice(slash + 1);
+    const { provider: sp, id: sid } = parseModelEntry(entry);
     const found = remaining.find((m) => m.provider === sp && m.id === sid);
     if (found) order.push(found);
   }
@@ -341,9 +341,7 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
       // Success — advance cursor past this model in the enabledModels list
       if (scopedModels) {
         const modelIdx = scopedModels.findIndex((s) => {
-          const slash = s.indexOf("/");
-          const sp = slash === -1 ? "" : s.slice(0, slash);
-          const sid = slash === -1 ? s : s.slice(slash + 1);
+          const { provider: sp, id: sid } = parseModelEntry(s);
           return sp === candidate.provider && sid === candidate.id;
         });
         if (modelIdx >= 0) fallbackCursor = (modelIdx + 1) % scopedModels.length;
