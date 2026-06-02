@@ -164,15 +164,17 @@ function buildModelOrder(
 
   if (remaining.length === 0) return [];
 
-  // Rotate remaining starting from fallbackCursor
-  const start = fallbackCursor % remaining.length;
-
-  log.debug(`remaining[${remaining.length}]: ${remaining.map((m) => modelKey(m.provider, m.id)).join(", ")}`);
-  log.debug(`start=${start}`);
-
+  // Walk enabledModels from cursor, picking only models in remaining
   const order: Array<{ provider: string; id: string }> = [];
-  for (let i = 0; i < remaining.length; i++) {
-    order.push(remaining[(start + i) % remaining.length]);
+  const src = scopedModels || remaining.map((m) => modelKey(m.provider, m.id));
+  for (let i = 0; i < src.length && order.length < remaining.length; i++) {
+    const idx = (fallbackCursor + i) % src.length;
+    const entry = src[idx];
+    const slash = entry.indexOf("/");
+    const sp = slash === -1 ? "" : entry.slice(0, slash);
+    const sid = slash === -1 ? entry : entry.slice(slash + 1);
+    const found = remaining.find((m) => m.provider === sp && m.id === sid);
+    if (found) order.push(found);
   }
   return order;
 }
