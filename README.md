@@ -22,15 +22,27 @@ agent_end fires with stopReason === "error"
 - **Sends `continue` after switching** — resumes from the current agent context instead of replaying a stale user request
 - **Resets on each failure** — each `agent_end` with error resets the timer, so it waits for the *last* failure's quiet period
 - **Skips user aborts** — only triggers on `stopReason === "error"`, not `"aborted"` (ESC)
-- **Smart ordering** — prefers the last working model (cached 1h), skips recently failed models (5min cooldown)
+- **Scoped ordering** — when `enabledModels` is configured, cycles through that list in order
 
 ## Install
 
+Install the latest released version:
+
 ```bash
-pi install git:github.com/cad0p/pi-fallback-provider
+pi install npm:@cad0p/pi-fallback-provider
 ```
 
-Or copy `index.ts` to `~/.pi/agent/extensions/`.
+Or install the latest prerelease from the `next` dist-tag:
+
+```bash
+pi install npm:@cad0p/pi-fallback-provider@next
+```
+
+For local development, install from the current git checkout:
+
+```bash
+pi install git:github.com/cad0p/pi-fallback-provider@main # or feature branch
+```
 
 ## Configuration
 
@@ -48,9 +60,7 @@ Use `/cycle-model` to manually cycle to the next available model and send `conti
 
 ## How it decides which model to try next
 
-1. **Cached model** — if you recently had a working model, try it first (1h TTL)
-2. **Round-robin** — cycles through remaining authenticated models
-3. **Failed models last** — models that recently failed are tried as a last resort (5min cooldown)
+When `enabledModels` is configured in pi settings, this extension walks that list in order and skips the current model. Without `enabledModels`, it currently has no fallback candidates to try.
 
 ## Differences from existing extensions
 
