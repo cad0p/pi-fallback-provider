@@ -26,11 +26,23 @@ agent_end fires with stopReason === "error"
 
 ## Install
 
+Install the latest released version:
+
 ```bash
-pi install git:github.com/cad0p/pi-fallback-provider
+pi install npm:@cad0p/pi-fallback-provider
 ```
 
-Or copy `index.ts` to `~/.pi/agent/extensions/`.
+Or install the latest prerelease from the `next` dist-tag:
+
+```bash
+pi install npm:@cad0p/pi-fallback-provider@next
+```
+
+For local development, install from the current git checkout:
+
+```bash
+pi install .
+```
 
 ## Configuration
 
@@ -45,48 +57,6 @@ PI_FALLBACK_DEBUG=true pi
 ## Manual trigger
 
 Use `/cycle-model` to manually cycle to the next available model and send `continue`.
-
-## Releases
-
-This package uses [`cad0p/semver-calver-release`](https://github.com/cad0p/semver-calver-release) for GitHub Releases and npm publishing.
-
-### Versioning
-
-Releases start from the SemVer version in `package.json`:
-
-```text
-0.1.0                 → first base release
-0.1.0-20260608.0      → same-day calver prerelease
-0.1.0-20260608.1      → another same-day calver prerelease
-0.2.0                 → next manual base release
-```
-
-### Automatic calver releases
-
-Pushes to `main` run `.github/workflows/release.yml`, which:
-
-1. Computes the next hybrid SemVer+CalVer version.
-2. Creates a GitHub prerelease for same-day changes.
-3. Publishes the package to npm with the `next` dist-tag for calver versions.
-4. Maintains a draft changelog PR branch for the current base version.
-
-### Base releases
-
-For a curated base release:
-
-1. Work on the draft branch named `release/from-vX.Y.Z`.
-2. Bump `package.json` to the next base version, for example `0.2.0`.
-3. Add a dated `CHANGELOG.md` section for that version.
-4. Merge the release PR into `main`.
-
-The `Validate Release PR` workflow checks that the version was bumped and that release PRs only contain expected files (`package.json`, lockfiles, and `CHANGELOG.md`).
-
-### Validation workflows
-
-- `Validate Package Version` runs on pull requests to `main` and blocks accidental version bumps outside release branches.
-- `Validate Release PR` runs on pull requests to `main` and validates release branches.
-
-All semver-calver-release actions are pinned to `@v1` for stable CI consumption.
 
 ## How it decides which model to try next
 
