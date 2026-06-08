@@ -3,13 +3,14 @@
  *
  * Unlike transport-level fallbacks, this hooks into `agent_end` and detects
  * when the agent has stopped making progress after an error. It cycles
- * through all available (authenticated) models, re-sending the last user
- * prompt each time.
+ * through all available (authenticated) models, sending "continue" each time
+ * so the agent resumes from its current context instead of replaying an
+ * outdated user request.
  *
  * How it works:
  *   1. `agent_end` fires with stopReason === "error" → start timer
  *   2. `turn_start` fires → cancel timer (pi is retrying / making progress)
- *   3. Timer expires → cycle to next model, re-send last user prompt
+ *   3. Timer expires → cycle to next model, send "continue"
  *
  * Design inspired by:
  *   - georgebashi/pi-retry (agent_end hook, progress detection)
@@ -34,7 +35,8 @@ import { join } from "node:path";
  *  retries a chance to complete. */
 const PROGRESS_TIMEOUT_MS = 20_000;
 
-
+/** Prompt sent after switching models so the agent continues from context. */
+const FALLBACK_PROMPT = "continue";
 
 /** Path to pi settings file. */
 const SETTINGS_PATH = join(getAgentDir(), "settings.json");
@@ -53,11 +55,6 @@ const log = {
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
-
-
-
-/** Last user prompt text, captured from `input` events. */
-let lastUserPrompt: string | null = null;
 
 /** Active progress timer. */
 let progressTimer: ReturnType<typeof setTimeout> | null = null;
@@ -149,12 +146,6 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
   log.debug("Loading extension");
   scopedModels = loadScopedModels();
 
-  // Capture the last user prompt so we can re-send it after switching models.
-  pi.on("input", async (event) => {
-    if (event.source === "interactive" || event.source === "rpc") {
-      lastUserPrompt = event.text;
-    }
-  });
 
   // Detect progress: if the agent starts a new turn, cancel the timer.
   pi.on("turn_start", async () => {
@@ -240,12 +231,11 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
   // Reset state on session switch
   pi.on("session_shutdown", async () => {
     clearFallbackState();
-    lastUserPrompt = null;
   });
 
   // Register a manual /cycle-next command for testing
   pi.registerCommand("cycle-model", {
-    description: "Cycle to the next available model (manual trigger)",
+    description: "Cycle to the next available model and send continue (manual trigger)",
     handler: async (_args, ctx) => {
       await cycleModel(ctx);
     },
@@ -311,11 +301,10 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
       ctx.ui.notify(`Switched to ${key} (previous model failed)`, "info");
       log.debug(`Switched to ${key}`);
 
-      // Re-send the last user prompt to kick off a new agent run
-      if (lastUserPrompt) {
-        log.debug(`Re-sending last user prompt`);
-        pi.sendUserMessage(lastUserPrompt);
-      }
+      // Send "continue" so the agent resumes from its current context instead
+      // of replaying a stale user request from before the failed turn.
+      log.debug(`Sending fallback prompt: ${FALLBACK_PROMPT}`);
+      pi.sendUserMessage(FALLBACK_PROMPT);
       return;
     }
 

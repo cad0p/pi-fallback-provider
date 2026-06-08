@@ -4,7 +4,7 @@ Automatic model cycling when the pi agent gets stuck on errors.
 
 ## The problem
 
-When an LLM provider fails (rate limit, context overflow, content policy, etc.), pi's built-in retry handles transient errors (429, 5xx). But when retries are exhausted — or the error isn't retryable — the agent just stops. You have to manually switch models and re-send your prompt.
+When an LLM provider fails (rate limit, context overflow, content policy, etc.), pi's built-in retry handles transient errors (429, 5xx). But when retries are exhausted — or the error isn't retryable — the agent just stops. You have to manually switch models and continue from the current context.
 
 ## How this extension helps
 
@@ -14,11 +14,12 @@ Instead of classifying errors or intercepting at the transport layer, this exten
 agent_end fires with stopReason === "error"
   → start 20s timer
   → if turn_start fires → cancel timer (pi is making progress)
-  → if timer expires → cycle to next model, re-send last user prompt
+  → if timer expires → cycle to next model, send "continue"
 ```
 
 - **No error classification** — works for any error type
 - **Respects pi's retries** — 20s timeout gives pi's built-in retry (3 retries × exponential backoff ≈ 14s) a chance to finish
+- **Sends `continue` after switching** — resumes from the current agent context instead of replaying a stale user request
 - **Resets on each failure** — each `agent_end` with error resets the timer, so it waits for the *last* failure's quiet period
 - **Skips user aborts** — only triggers on `stopReason === "error"`, not `"aborted"` (ESC)
 - **Smart ordering** — prefers the last working model (cached 1h), skips recently failed models (5min cooldown)
@@ -43,7 +44,7 @@ PI_FALLBACK_DEBUG=true pi
 
 ## Manual trigger
 
-Use `/cycle-model` to manually cycle to the next available model at any time.
+Use `/cycle-model` to manually cycle to the next available model and send `continue`.
 
 ## How it decides which model to try next
 
