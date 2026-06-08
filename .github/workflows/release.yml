@@ -1,0 +1,34 @@
+name: Auto Release
+
+on:
+  push:
+    branches: [main, 'release/*']
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      has_changes: ${{ steps.release.outputs.has_changes }}
+    steps:
+      - id: release
+        uses: cad0p/semver-calver-release/release@v1
+        with:
+          skip_release: ${{ github.ref != 'refs/heads/main' }}
+
+  publish:
+    needs: release
+    if: github.ref == 'refs/heads/main' && needs.release.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: cad0p/semver-calver-release/npm-publish@v1
+        with:
+          tag: v${{ needs.release.outputs.version }}
