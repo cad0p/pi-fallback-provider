@@ -22,7 +22,7 @@ agent_end fires with stopReason === "error"
 - **Sends `continue` after switching** — resumes from the current agent context instead of replaying a stale user request
 - **Resets on each failure** — each `agent_end` with error resets the timer, so it waits for the *last* failure's quiet period
 - **Skips user aborts** — only triggers on `stopReason === "error"`, not `"aborted"` (ESC)
-- **Smart ordering** — prefers the last working model (cached 1h), skips recently failed models (5min cooldown)
+- **Scoped ordering** — when `enabledModels` is configured, cycles through that list in order
 
 ## Install
 
@@ -46,11 +46,51 @@ PI_FALLBACK_DEBUG=true pi
 
 Use `/cycle-model` to manually cycle to the next available model and send `continue`.
 
+## Releases
+
+This package uses [`cad0p/semver-calver-release`](https://github.com/cad0p/semver-calver-release) for GitHub Releases and npm publishing.
+
+### Versioning
+
+Releases start from the SemVer version in `package.json`:
+
+```text
+0.1.0                 → first base release
+0.1.0-20260608.0      → same-day calver prerelease
+0.1.0-20260608.1      → another same-day calver prerelease
+0.2.0                 → next manual base release
+```
+
+### Automatic calver releases
+
+Pushes to `main` run `.github/workflows/release.yml`, which:
+
+1. Computes the next hybrid SemVer+CalVer version.
+2. Creates a GitHub prerelease for same-day changes.
+3. Publishes the package to npm with the `next` dist-tag for calver versions.
+4. Maintains a draft changelog PR branch for the current base version.
+
+### Base releases
+
+For a curated base release:
+
+1. Work on the draft branch named `release/from-vX.Y.Z`.
+2. Bump `package.json` to the next base version, for example `0.2.0`.
+3. Add a dated `CHANGELOG.md` section for that version.
+4. Merge the release PR into `main`.
+
+The `Validate Release PR` workflow checks that the version was bumped and that release PRs only contain expected files (`package.json`, lockfiles, and `CHANGELOG.md`).
+
+### Validation workflows
+
+- `Validate Package Version` runs on pull requests to `main` and blocks accidental version bumps outside release branches.
+- `Validate Release PR` runs on pull requests to `main` and validates release branches.
+
+All semver-calver-release actions are pinned to `@v1` for stable CI consumption.
+
 ## How it decides which model to try next
 
-1. **Cached model** — if you recently had a working model, try it first (1h TTL)
-2. **Round-robin** — cycles through remaining authenticated models
-3. **Failed models last** — models that recently failed are tried as a last resort (5min cooldown)
+When `enabledModels` is configured in pi settings, this extension walks that list in order and skips the current model. Without `enabledModels`, it currently has no fallback candidates to try.
 
 ## Differences from existing extensions
 
