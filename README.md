@@ -41,7 +41,7 @@ pi install npm:@cad0p/pi-fallback-provider@next
 For local development, install from the current git checkout:
 
 ```bash
-pi install .
+pi install git:github.com/cad0p/pi-fallback-provider@main # or feature branch
 ```
 
 ## Configuration
