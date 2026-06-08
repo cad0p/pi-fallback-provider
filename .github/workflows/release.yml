@@ -7,6 +7,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  id-token: write
 
 jobs:
   release:
@@ -19,3 +20,15 @@ jobs:
         uses: cad0p/semver-calver-release/release@v1
         with:
           skip_release: ${{ github.ref != 'refs/heads/main' }}
+
+  publish:
+    needs: release
+    if: github.ref == 'refs/heads/main' && needs.release.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: cad0p/semver-calver-release/npm-publish@v1
+        with:
+          tag: v${{ needs.release.outputs.version }}
