@@ -3,6 +3,13 @@
   "version": "0.1.0",
   "description": "Automatic model cycling when the pi agent gets stuck on errors",
   "main": "index.ts",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cad0p/pi-fallback-provider"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "pi": {
     "extensions": ["./index.ts"]
   },
