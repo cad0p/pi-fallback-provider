@@ -62,3 +62,116 @@ export function groupSiblings(authKeys: string[]): Map<string, string[]> {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// §3. Alias-config builder (pure)
+// ---------------------------------------------------------------------------
+
+/** Minimal structural view of a live registry model used as a clone source. */
+export interface CloneSourceModel {
+  id: string;
+  name: string;
+  api?: string;
+  baseUrl?: string;
+  reasoning: boolean;
+  thinkingLevelMap?: unknown;
+  input: string[];
+  cost: { input: number; output: number; cacheRead: number; cacheWrite: number; [k: string]: unknown };
+  contextWindow: number;
+  maxTokens: number;
+  samplingParams?: Record<string, unknown>;
+  compat?: Record<string, unknown>;
+  // Tolerate live-registry extras (provider, headers, ...) — never cloned.
+  [key: string]: unknown;
+}
+
+/** Per-model config for an alias provider registration / cache entry. */
+export interface AliasModelDef {
+  id: string;
+  name: string;
+  api?: string;
+  baseUrl?: string;
+  reasoning: boolean;
+  thinkingLevelMap?: unknown;
+  input: string[];
+  cost: { input: number; output: number; cacheRead: number; cacheWrite: number; [k: string]: unknown };
+  contextWindow: number;
+  maxTokens: number;
+  samplingParams?: Record<string, unknown>;
+  compat?: Record<string, unknown>;
+}
+
+/** Provider-level config built for `pi.registerProvider(aliasId, config)`. */
+export interface AliasProviderConfig {
+  name?: string;
+  baseUrl?: string;
+  api?: string;
+  headers?: Record<string, string>;
+  authHeader?: boolean;
+  compat?: Record<string, unknown>;
+  models?: AliasModelDef[];
+}
+
+function deepClone<T>(value: T): T {
+  if (Array.isArray(value)) return value.map((v) => deepClone(v)) as unknown as T;
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = deepClone(v);
+    return out as T;
+  }
+  return value;
+}
+
+function shallowClone(value: unknown): unknown {
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) return { ...value };
+  return value;
+}
+
+/**
+ * Build an alias provider config by per-model cloning the base catalog.
+ *
+ * Clones exactly: id, name, api, baseUrl, reasoning, input, cost,
+ * contextWindow, maxTokens, thinkingLevelMap, samplingParams, compat.
+ * NEVER sets `apiKey` (alias auth resolves from the alias's own auth.json
+ * slot), `streamSimple`, or `oauth`. Per-model `headers` are dropped — pi's
+ * provider composition forces extension per-model headers to `undefined`.
+ *
+ * NOTE on `samplingParams`: pi's public `ProviderModelConfig` type omits it
+ * while the runtime `ProviderConfigInput.models[]` accepts it
+ * (provider-composer.ts). Callers pass this config through a structural cast.
+ */
+export function buildAliasConfig(
+  aliasId: string,
+  base: string,
+  baseModels: CloneSourceModel[],
+  opts?: { label?: string },
+): AliasProviderConfig {
+  const account = opts?.label ?? parseAliasId(aliasId)?.account ?? aliasId;
+  const models: AliasModelDef[] = baseModels.map((m) => {
+    const def: AliasModelDef = {
+      id: m.id,
+      name: m.name,
+      reasoning: m.reasoning,
+      input: [...m.input],
+      cost: deepClone(m.cost),
+      contextWindow: m.contextWindow,
+      maxTokens: m.maxTokens,
+    };
+    if (m.api !== undefined) def.api = m.api;
+    if (m.baseUrl !== undefined) def.baseUrl = m.baseUrl;
+    if (m.thinkingLevelMap !== undefined) def.thinkingLevelMap = shallowClone(m.thinkingLevelMap);
+    if (m.samplingParams !== undefined) def.samplingParams = deepClone(m.samplingParams);
+    if (m.compat !== undefined) def.compat = deepClone(m.compat);
+    return def;
+  });
+  const config: AliasProviderConfig = {
+    name: `${base} (${account})`,
+    models,
+  };
+  // Top-level `api` only when uniform across base models (per-model `api`
+  // is always set); otherwise omit so per-model values govern.
+  if (baseModels.length > 0 && baseModels.every((m) => m.api !== undefined && m.api === baseModels[0].api)) {
+    config.api = baseModels[0].api;
+  }
+  return config;
+}
+
