@@ -129,6 +129,19 @@ function shallowClone(value: unknown): unknown {
   return value;
 }
 
+/** Provider display name for an alias slot: `"<base> (<account>)"`. */
+export function aliasDisplayName(base: string, account: string): string {
+  return `${base} (${account})`;
+}
+
+/** Top-level `api` for a model list — set only when uniform, else undefined. */
+function uniformApi(models: Array<{ api?: string }>): string | undefined {
+  if (models.length === 0) return undefined;
+  const first = models[0].api;
+  if (first === undefined) return undefined;
+  return models.every((m) => m.api === first) ? first : undefined;
+}
+
 /**
  * Build an alias provider config by per-model cloning the base catalog.
  *
@@ -167,14 +180,13 @@ export function buildAliasConfig(
     return def;
   });
   const config: AliasProviderConfig = {
-    name: `${base} (${account})`,
+    name: aliasDisplayName(base, account),
     models,
   };
   // Top-level `api` only when uniform across base models (per-model `api`
   // is always set); otherwise omit so per-model values govern.
-  if (baseModels.length > 0 && baseModels.every((m) => m.api !== undefined && m.api === baseModels[0].api)) {
-    config.api = baseModels[0].api;
-  }
+  const api = uniformApi(baseModels);
+  if (api !== undefined) config.api = api;
   return config;
 }
 
@@ -373,5 +385,87 @@ export function writeAliasCache(
   const tmp = `${dest}.tmp`;
   writeFileSync(tmp, JSON.stringify(file, null, 2), "utf-8");
   renameSync(tmp, dest);
+}
+
+// ---------------------------------------------------------------------------
+// §6. Phase 1 — load-time registration from cache (injectable core)
+// ---------------------------------------------------------------------------
+
+/**
+ * Read auth.json KEYS only (values are credentials — never read/log them).
+ * Throws on missing/malformed file; callers translate that into warn + skip.
+ */
+export function readAuthKeys(agentDir: string): string[] {
+  const raw = readFileSync(join(agentDir, "auth.json"), "utf-8");
+  return Object.keys(JSON.parse(raw));
+}
+
+export interface Phase1Deps {
+  readCache: () => Record<string, AliasCacheEntry>;
+  readAuthKeys: () => string[];
+  readSection: (providerId: string) => ModelsJsonProviderSection | undefined;
+  register: (aliasId: string, config: AliasProviderConfig) => void;
+  warn?: WarnFn;
+  debug?: WarnFn;
+}
+
+/**
+ * Register cached alias providers at extension load (Phase 1).
+ *
+ * For each cached alias id the base is re-parsed (unparseable ids are
+ * skipped with a warn) and §4 inheritance is re-applied with a FRESH
+ * models.json read, so user settings changes apply without waiting for
+ * `session_start`. Returns the registered alias ids. Never throws — the
+ * factory has no `ctx` and must not break extension load.
+ *
+ * No cache file → registers nothing. Logs at debug, escalating to warn
+ * only when auth.json actually contains sibling slots (real degradation
+ * vs nothing configured).
+ */
+export function registerCachedAliases(deps: Phase1Deps): string[] {
+  const warn = deps.warn ?? (() => {});
+  const debug = deps.debug ?? (() => {});
+  let cache: Record<string, AliasCacheEntry>;
+  try {
+    cache = deps.readCache();
+  } catch (err) {
+    warn(`[pi-fallback] Could not read alias model cache: ${err}`);
+    return [];
+  }
+  const ids = Object.keys(cache);
+  if (ids.length === 0) {
+    let degraded = false;
+    try {
+      degraded = groupSiblings(deps.readAuthKeys()).size > 0;
+    } catch {
+      degraded = false;
+    }
+    (degraded ? warn : debug)(
+      `[pi-fallback] No cached alias models; aliases will register on session_start`,
+    );
+    return [];
+  }
+  const registered: string[] = [];
+  for (const [aliasId, entry] of Object.entries(cache)) {
+    const parsed = parseAliasId(aliasId);
+    if (!parsed) {
+      warn(`[pi-fallback] Skipping cached alias with unparseable id "${aliasId}"`);
+      continue;
+    }
+    const base = entry?.base ?? parsed.base;
+    const account = entry?.account ?? parsed.account;
+    const models = Array.isArray(entry?.models) ? entry.models : [];
+    const rebuilt: AliasProviderConfig = { name: aliasDisplayName(base, account), models };
+    const api = uniformApi(models);
+    if (api !== undefined) rebuilt.api = api;
+    const config = applyInheritance(rebuilt, deps.readSection(base), deps.readSection(aliasId));
+    try {
+      deps.register(aliasId, config);
+      registered.push(aliasId);
+    } catch (err) {
+      warn(`[pi-fallback] Failed to register cached alias "${aliasId}": ${err}`);
+    }
+  }
+  return registered;
 }
 

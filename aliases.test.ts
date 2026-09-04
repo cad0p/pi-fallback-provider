@@ -10,8 +10,10 @@ import {
   parseAliasId,
   readAliasCache,
   readModelsJsonSection,
+  registerCachedAliases,
   writeAliasCache,
 } from "./aliases";
+import type { Phase1Deps } from "./aliases";
 import type { AliasProviderConfig, CloneSourceModel } from "./aliases";
 
 describe("parseAliasId", () => {
@@ -343,5 +345,82 @@ describe("alias model cache", () => {
     expect(raw).not.toContain("sk-should-never-persist");
     const back = readAliasCache(dir);
     expect("apiKey" in (back["opencode-2"].models[0] as unknown as Record<string, unknown>)).toBe(false);
+  });
+});
+
+describe("registerCachedAliases (Phase 1)", () => {
+  const cached = {
+    "opencode-2": {
+      base: "opencode",
+      account: "2",
+      models: [
+        {
+          id: "model-a",
+          name: "Model A",
+          api: "anthropic-messages",
+          baseUrl: "https://api.example.com",
+          reasoning: false,
+          input: ["text"],
+          cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 100000,
+          maxTokens: 8192,
+        },
+      ],
+    },
+  };
+
+  function deps(overrides: Partial<Phase1Deps> = {}) {
+    const registered: Array<{ aliasId: string; config: unknown }> = [];
+    const warnings: string[] = [];
+    const debugs: string[] = [];
+    return {
+      registered,
+      warnings,
+      debugs,
+      deps: {
+        readCache: () => structuredClone(cached),
+        readAuthKeys: () => ["opencode", "opencode-2"],
+        readSection: () => undefined,
+        register: (aliasId: string, config: unknown) => {
+          registered.push({ aliasId, config });
+        },
+        warn: (m: string) => warnings.push(m),
+        debug: (m: string) => debugs.push(m),
+        ...overrides,
+      },
+    };
+  }
+
+  it("registers cached alias ids with rebuilt configs", () => {
+    const t = deps();
+    const ids = registerCachedAliases(t.deps);
+    expect(ids).toEqual(["opencode-2"]);
+    expect(t.registered).toHaveLength(1);
+    const config = t.registered[0].config as Record<string, unknown>;
+    expect(config.name).toBe("opencode (2)");
+    expect((config.models as unknown[])).toHaveLength(1);
+    expect(t.warnings).toEqual([]);
+  });
+
+  it("registers nothing (debug, not warn) when the cache is empty and no slots exist", () => {
+    const t = deps({ readCache: () => ({}), readAuthKeys: () => ["opencode"] });
+    expect(registerCachedAliases(t.deps)).toEqual([]);
+    expect(t.registered).toEqual([]);
+    expect(t.warnings).toEqual([]);
+    expect(t.debugs).toHaveLength(1);
+  });
+
+  it("warns when the cache is empty but auth.json holds sibling slots", () => {
+    const t = deps({ readCache: () => ({}) });
+    expect(registerCachedAliases(t.deps)).toEqual([]);
+    expect(t.warnings).toHaveLength(1);
+    expect(t.debugs).toEqual([]);
+  });
+
+  it("skips unparseable cached ids with a warn", () => {
+    const t = deps({ readCache: () => ({ "not-an-alias!!-x": structuredClone(cached["opencode-2"]) }) });
+    expect(registerCachedAliases(t.deps)).toEqual([]);
+    expect(t.registered).toEqual([]);
+    expect(t.warnings).toHaveLength(1);
   });
 });

@@ -18,12 +18,19 @@
  *   - xilnick/pi-fallback-provider (caching, cooldown)
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ProviderConfig } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { matchesKey } from "@earendil-works/pi-tui";
 import type { TUI } from "@earendil-works/pi-tui";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+
+import {
+  readAliasCache,
+  readAuthKeys,
+  readModelsJsonSection,
+  registerCachedAliases,
+} from "./aliases";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -145,6 +152,27 @@ function buildModelOrder(
 export default function piFallbackProvider(pi: ExtensionAPI) {
   log.debug("Loading extension");
   scopedModels = loadScopedModels();
+
+  // Phase 1 (multi-account): register alias providers from the MODELS-ONLY
+  // cache file. Graceful when absent (first run heals on session_start).
+  // Inheritance is re-applied with a fresh models.json read per alias.
+  // Never throws — a factory failure must not break extension load.
+  try {
+    const agentDir = getAgentDir();
+    registerCachedAliases({
+      readCache: () => readAliasCache(agentDir, (m) => log.warn(m)),
+      readAuthKeys: () => readAuthKeys(agentDir),
+      readSection: (id) => readModelsJsonSection(agentDir, id, (m) => log.warn(m)),
+      // Structural cast: our per-model `samplingParams` is accepted by the
+      // runtime ProviderConfigInput but missing from the public
+      // ProviderModelConfig type (see aliases.ts buildAliasConfig docs).
+      register: (aliasId, config) => pi.registerProvider(aliasId, config as unknown as ProviderConfig),
+      warn: (m) => log.warn(m),
+      debug: (m) => log.debug(m),
+    });
+  } catch (err) {
+    log.warn(`Alias Phase-1 registration failed: ${err}`);
+  }
 
 
   // Detect progress: if the agent starts a new turn, cancel the timer.
