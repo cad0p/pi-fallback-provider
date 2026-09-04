@@ -22,6 +22,15 @@
     "high-availability"
   ],
   "license": "MIT",
+  "scripts": {
+    "test": "vitest run",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.0",
+    "typescript": "5.9.3",
+    "vitest": "4.1.9"
+  },
   "engines": {
     "node": ">=20"
   }
