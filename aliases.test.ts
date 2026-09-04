@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -8,7 +8,9 @@ import {
   buildAliasConfig,
   groupSiblings,
   parseAliasId,
+  readAliasCache,
   readModelsJsonSection,
+  writeAliasCache,
 } from "./aliases";
 import type { AliasProviderConfig, CloneSourceModel } from "./aliases";
 
@@ -268,5 +270,78 @@ describe("readModelsJsonSection", () => {
     writeFileSync(join(dir, "models.json"), "{not json");
     expect(readModelsJsonSection(dir, "opencode", (m) => warnings.push(m))).toBeUndefined();
     expect(warnings).toHaveLength(1);
+  });
+});
+
+describe("alias model cache", () => {
+  function tmpAgentDir(): string {
+    return mkdtempSync(join(tmpdir(), "pi-fallback-cache-"));
+  }
+
+  function cacheEntry() {
+    return {
+      base: "opencode",
+      account: "2",
+      models: [
+        {
+          id: "model-a",
+          name: "Model A",
+          api: "anthropic-messages",
+          baseUrl: "https://api.example.com",
+          reasoning: false,
+          input: ["text"],
+          cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 100000,
+          maxTokens: 8192,
+          samplingParams: { temperature: 0.5 },
+          compat: { foo: "bar" },
+        },
+      ],
+    };
+  }
+
+  it("round-trips models by value (samplingParams/compat survive)", () => {
+    const dir = tmpAgentDir();
+    writeAliasCache(dir, { "opencode-2": cacheEntry() }, { now: () => "2026-09-04T00:00:00.000Z" });
+    const back = readAliasCache(dir);
+    expect(back["opencode-2"]).toEqual(cacheEntry());
+    expect(back["opencode-2"].models[0].samplingParams).toEqual({ temperature: 0.5 });
+    expect(back["opencode-2"].models[0].compat).toEqual({ foo: "bar" });
+  });
+
+  it("returns empty silently when the cache is missing", () => {
+    const warnings: string[] = [];
+    expect(readAliasCache(tmpAgentDir(), (m: string) => warnings.push(m))).toEqual({});
+    expect(warnings).toEqual([]);
+  });
+
+  it("returns empty with a warning on corrupt content or version mismatch", () => {
+    const dir = tmpAgentDir();
+    const warnings: string[] = [];
+    const warn = (m: string) => warnings.push(m);
+    writeFileSync(join(dir, "pi-fallback-alias-models.json"), "{nope");
+    expect(readAliasCache(dir, warn)).toEqual({});
+    writeFileSync(
+      join(dir, "pi-fallback-alias-models.json"),
+      JSON.stringify({ version: 999, updatedAt: "x", aliases: {} }),
+    );
+    expect(readAliasCache(dir, warn)).toEqual({});
+    expect(warnings).toHaveLength(2);
+  });
+
+  it("never persists apiKey even if a caller passes one", () => {
+    const dir = tmpAgentDir();
+    const tainted = cacheEntry() as unknown as { base: string; account: string; models: Record<string, unknown>[] };
+    tainted.models[0] = {
+      ...tainted.models[0],
+      apiKey: "sk-should-never-persist",
+      provider: "opencode",
+    };
+    writeAliasCache(dir, { "opencode-2": tainted as unknown as ReturnType<typeof cacheEntry> });
+    const raw = readFileSync(join(dir, "pi-fallback-alias-models.json"), "utf-8");
+    expect(raw).not.toContain("apiKey");
+    expect(raw).not.toContain("sk-should-never-persist");
+    const back = readAliasCache(dir);
+    expect("apiKey" in (back["opencode-2"].models[0] as unknown as Record<string, unknown>)).toBe(false);
   });
 });

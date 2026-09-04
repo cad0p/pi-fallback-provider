@@ -13,7 +13,7 @@
  * recognized.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -259,5 +259,119 @@ export function readModelsJsonSection(
     warn(`[pi-fallback] Could not parse models.json: ${err}`);
     return undefined;
   }
+}
+
+// ---------------------------------------------------------------------------
+// §5. Alias model-cache file helpers
+// ---------------------------------------------------------------------------
+
+/** Cache file shape: MODELS ONLY, never keys/credentials. */
+export interface AliasCacheEntry {
+  base: string;
+  account: string;
+  models: AliasModelDef[];
+}
+
+export interface AliasCacheFile {
+  version: 1;
+  updatedAt: string;
+  aliases: Record<string, AliasCacheEntry>;
+}
+
+export const ALIAS_CACHE_VERSION = 1 as const;
+export const ALIAS_CACHE_FILENAME = "pi-fallback-alias-models.json";
+
+export function cachePath(agentDir: string): string {
+  return join(agentDir, ALIAS_CACHE_FILENAME);
+}
+
+/** Rebuild one cached model through the known-field whitelist. */
+function sanitizeModel(model: AliasModelDef): AliasModelDef {
+  const out: AliasModelDef = {
+    id: model.id,
+    name: model.name,
+    reasoning: model.reasoning,
+    input: [...model.input],
+    cost: deepClone(model.cost),
+    contextWindow: model.contextWindow,
+    maxTokens: model.maxTokens,
+  };
+  if (model.api !== undefined) out.api = model.api;
+  if (model.baseUrl !== undefined) out.baseUrl = model.baseUrl;
+  if (model.thinkingLevelMap !== undefined) out.thinkingLevelMap = deepClone(model.thinkingLevelMap);
+  if (model.samplingParams !== undefined) out.samplingParams = deepClone(model.samplingParams);
+  if (model.compat !== undefined) out.compat = deepClone(model.compat);
+  return out;
+}
+
+function isCacheEntry(value: unknown): value is AliasCacheEntry {
+  if (value === null || typeof value !== "object") return false;
+  const e = value as Record<string, unknown>;
+  return typeof e.base === "string" && typeof e.account === "string" && Array.isArray(e.models);
+}
+
+/**
+ * Read the alias model cache. Missing file → empty (silent: first launch is
+ * normal; Phase 1 escalates to warn only when auth.json holds sibling
+ * slots). Corrupt file / version mismatch → warn + empty.
+ */
+export function readAliasCache(
+  agentDir: string,
+  warn: WarnFn = console.warn.bind(console),
+): Record<string, AliasCacheEntry> {
+  let raw: string;
+  try {
+    raw = readFileSync(cachePath(agentDir), "utf-8");
+  } catch {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<AliasCacheFile>;
+    if (parsed?.version !== ALIAS_CACHE_VERSION || parsed.aliases === null || typeof parsed.aliases !== "object") {
+      warn(`[pi-fallback] Ignoring alias model cache (unsupported version or shape)`);
+      return {};
+    }
+    const out: Record<string, AliasCacheEntry> = {};
+    for (const [aliasId, entry] of Object.entries(parsed.aliases)) {
+      if (!isCacheEntry(entry)) {
+        warn(`[pi-fallback] Ignoring malformed cache entry for alias "${aliasId}"`);
+        continue;
+      }
+      out[aliasId] = { base: entry.base, account: entry.account, models: entry.models.map(sanitizeModel) };
+    }
+    return out;
+  } catch (err) {
+    warn(`[pi-fallback] Could not parse alias model cache: ${err}`);
+    return {};
+  }
+}
+
+/**
+ * Write the alias model cache atomically (tmp + rename). Models are
+ * sanitized through the known-field whitelist, so even a caller-passed
+ * `apiKey` (or any other secret/extra) never reaches disk.
+ */
+export function writeAliasCache(
+  agentDir: string,
+  aliases: Record<string, AliasCacheEntry>,
+  opts?: { now?: () => string },
+): void {
+  const sanitized: Record<string, AliasCacheEntry> = {};
+  for (const [aliasId, entry] of Object.entries(aliases)) {
+    sanitized[aliasId] = {
+      base: entry.base,
+      account: entry.account,
+      models: entry.models.map(sanitizeModel),
+    };
+  }
+  const file: AliasCacheFile = {
+    version: ALIAS_CACHE_VERSION,
+    updatedAt: opts?.now ? opts.now() : new Date().toISOString(),
+    aliases: sanitized,
+  };
+  const dest = cachePath(agentDir);
+  const tmp = `${dest}.tmp`;
+  writeFileSync(tmp, JSON.stringify(file, null, 2), "utf-8");
+  renameSync(tmp, dest);
 }
 
