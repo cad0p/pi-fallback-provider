@@ -18,12 +18,22 @@
  *   - xilnick/pi-fallback-provider (caching, cooldown)
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ProviderConfig } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { matchesKey } from "@earendil-works/pi-tui";
 import type { TUI } from "@earendil-works/pi-tui";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+
+import {
+  buildModelOrder,
+  indexOfScoped,
+  readAliasCache,
+  readAuthKeys,
+  readModelsJsonSection,
+  registerCachedAliases,
+  syncAliases,
+  writeAliasCache,
+} from "./aliases";
+import type { CloneSourceModel, SyncAliasesResult } from "./aliases";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -37,9 +47,6 @@ const PROGRESS_TIMEOUT_MS = 20_000;
 
 /** Prompt sent after switching models so the agent continues from context. */
 const FALLBACK_PROMPT = "continue";
-
-/** Path to pi settings file. */
-const SETTINGS_PATH = join(getAgentDir(), "settings.json");
 
 /** Debug logging. */
 const DEBUG =
@@ -59,10 +66,7 @@ const log = {
 /** Active progress timer. */
 let progressTimer: ReturnType<typeof setTimeout> | null = null;
 
-/** Scoped models from settings.json (enabledModels). */
-let scopedModels: string[] | null = null;
-
-/** Position cursor in the enabledModels array for round-robin. */
+/** Position cursor in the scoped-models array for round-robin. */
 let fallbackCursor = 0;
 
 /** Countdown interval for status bar updates. */
@@ -95,56 +99,33 @@ function modelKey(provider: string, id: string): string {
   return `${provider}/${id}`;
 }
 
-/** Split a "provider/id" string (id may contain slashes). */
-function parseModelEntry(s: string): { provider: string; id: string } {
-  const slash = s.indexOf("/");
-  if (slash === -1) return { provider: "", id: s };
-  return { provider: s.slice(0, slash), id: s.slice(slash + 1) };
-}
-
-/**
- * Load scoped models from settings.json (enabledModels field).
- * Returns null if no enabledModels configured (falls back to all available).
- */
-function loadScopedModels(): string[] | null {
-  try {
-    const raw = readFileSync(SETTINGS_PATH, "utf-8");
-    const settings = JSON.parse(raw);
-    if (Array.isArray(settings.enabledModels) && settings.enabledModels.length > 0) {
-      log.debug(`Loaded ${settings.enabledModels.length} scoped models from settings`);
-      return settings.enabledModels;
-    }
-  } catch (err) {
-    log.warn(`Could not read settings from ${SETTINGS_PATH}: ${err}`);
-  }
-  return null;
-}
-
-/** Build the ordered list of models to try.
- *  Walks enabledModels from fallbackCursor, skipping the current model. */
-function buildModelOrder(
-  currentProvider: string,
-  currentId: string,
-): Array<{ provider: string; id: string }> {
-  const src = scopedModels;
-  if (!src || src.length === 0) return [];
-
-  const order: Array<{ provider: string; id: string }> = [];
-  for (let i = 0; i < src.length; i++) {
-    const { provider, id } = parseModelEntry(src[(fallbackCursor + i) % src.length]);
-    if (provider === currentProvider && id === currentId) continue;
-    order.push({ provider, id });
-  }
-  return order;
-}
-
 // ---------------------------------------------------------------------------
 // Extension
 // ---------------------------------------------------------------------------
 
 export default function piFallbackProvider(pi: ExtensionAPI) {
   log.debug("Loading extension");
-  scopedModels = loadScopedModels();
+
+  // Phase 1 (multi-account): register alias providers from the MODELS-ONLY
+  // cache file. Graceful when absent (first run heals on session_start).
+  // Inheritance is re-applied with a fresh models.json read per alias.
+  // Never throws — a factory failure must not break extension load.
+  try {
+    const agentDir = getAgentDir();
+    registerCachedAliases({
+      readCache: () => readAliasCache(agentDir, (m) => log.warn(m)),
+      readAuthKeys: () => readAuthKeys(agentDir),
+      readSection: (id) => readModelsJsonSection(agentDir, id, (m) => log.warn(m)),
+      // Structural cast: our per-model `samplingParams` is accepted by the
+      // runtime ProviderConfigInput but missing from the public
+      // ProviderModelConfig type (see aliases.ts buildAliasConfig docs).
+      register: (aliasId, config) => pi.registerProvider(aliasId, config as unknown as ProviderConfig),
+      warn: (m) => log.warn(m),
+      debug: (m) => log.debug(m),
+    });
+  } catch (err) {
+    log.warn(`Alias Phase-1 registration failed: ${err}`);
+  }
 
 
   // Detect progress: if the agent starts a new turn, cancel the timer.
@@ -226,6 +207,10 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
       clearFallbackState(ctx);
       return { consume: true };
     });
+
+    // Phase 2 (multi-account): live-clone base catalogs into alias
+    // providers and rewrite the MODELS-ONLY cache (prunes dead aliases).
+    runAliasSync(ctx);
   });
 
   // Reset state on session switch
@@ -240,6 +225,51 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
       await cycleModel(ctx);
     },
   });
+
+  // Manual alias re-sync (same code path as session_start Phase 2).
+  pi.registerCommand("fallback-refresh", {
+    description: "Re-sync multi-account alias providers from auth.json and live models",
+    handler: async (_args, ctx) => {
+      const result = runAliasSync(ctx);
+      if (!result) {
+        ctx.ui.notify("Alias refresh failed (see logs).", "error");
+      } else if (result.aborted) {
+        ctx.ui.notify("Alias refresh aborted: could not read auth.json.", "warning");
+      } else {
+        ctx.ui.notify(`Refreshed ${result.registered.length} alias provider(s).`, "info");
+      }
+    },
+  });
+
+  // Phase-2 body shared by session_start and /fallback-refresh.
+  // Post-bind registration takes effect immediately. Never throws — a
+  // throwing session_start handler must not break session boot.
+  function runAliasSync(ctx: ExtensionContext): SyncAliasesResult | undefined {
+    try {
+      const agentDir = getAgentDir();
+      const byProvider = new Map<string, CloneSourceModel[]>();
+      for (const m of ctx.modelRegistry.getAll()) {
+        const provider = (m as { provider?: unknown }).provider;
+        if (typeof provider !== "string") continue;
+        const list = byProvider.get(provider) ?? [];
+        list.push(m as unknown as CloneSourceModel);
+        byProvider.set(provider, list);
+      }
+      return syncAliases({
+        readAuthKeys: () => readAuthKeys(agentDir),
+        getBaseModels: (base) => byProvider.get(base) ?? [],
+        readSection: (id) => readModelsJsonSection(agentDir, id, (msg) => log.warn(msg)),
+        // Structural cast: see Phase-1 register for the samplingParams note.
+        register: (aliasId, config) => pi.registerProvider(aliasId, config as unknown as ProviderConfig),
+        writeCache: (aliases) => writeAliasCache(agentDir, aliases),
+        warn: (m) => log.warn(m),
+        debug: (m) => log.debug(m),
+      });
+    } catch (err) {
+      log.warn(`Alias sync failed: ${err}`);
+      return undefined;
+    }
+  }
 
   // Core cycling logic
   async function cycleModel(ctx: ExtensionContext): Promise<void> {
@@ -256,7 +286,12 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
       return;
     }
 
-    const order = buildModelOrder(current.provider, current.id);
+    const scoped = ctx.scopedModels ?? [];
+    if (ctx.scopedModels == null) {
+      // Old pi without live scoping (needs pi >= v0.83.0) — no file fallback.
+      log.warn("ctx.scopedModels is unavailable (pi >= v0.83.0 required) — cannot build fallback order");
+    }
+    const order = buildModelOrder(scoped, current.provider, current.id, fallbackCursor);
     if (order.length === 0) {
       log.warn("No models available to cycle to");
       ctx.ui.notify("No fallback models available.", "error");
@@ -289,13 +324,10 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
         continue;
       }
 
-      // Success — advance cursor past this model in the enabledModels list
-      if (scopedModels) {
-        const modelIdx = scopedModels.findIndex((s) => {
-          const { provider: sp, id: sid } = parseModelEntry(s);
-          return sp === candidate.provider && sid === candidate.id;
-        });
-        if (modelIdx >= 0) fallbackCursor = (modelIdx + 1) % scopedModels.length;
+      // Success — advance cursor past this model in the live scope array
+      if (scoped.length > 0) {
+        const modelIdx = indexOfScoped(scoped, candidate.provider, candidate.id);
+        if (modelIdx >= 0) fallbackCursor = (modelIdx + 1) % scoped.length;
       }
 
       ctx.ui.notify(`Switched to ${key} (previous model failed)`, "info");
