@@ -33,7 +33,7 @@ import {
   syncAliases,
   writeAliasCache,
 } from "./aliases";
-import type { CloneSourceModel } from "./aliases";
+import type { CloneSourceModel, SyncAliasesResult } from "./aliases";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -210,31 +210,7 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
 
     // Phase 2 (multi-account): live-clone base catalogs into alias
     // providers and rewrite the MODELS-ONLY cache (prunes dead aliases).
-    // Post-bind registration takes effect immediately. Never throws — a
-    // throwing session_start handler must not break session boot.
-    try {
-      const agentDir = getAgentDir();
-      const byProvider = new Map<string, CloneSourceModel[]>();
-      for (const m of ctx.modelRegistry.getAll()) {
-        const provider = (m as { provider?: unknown }).provider;
-        if (typeof provider !== "string") continue;
-        const list = byProvider.get(provider) ?? [];
-        list.push(m as unknown as CloneSourceModel);
-        byProvider.set(provider, list);
-      }
-      syncAliases({
-        readAuthKeys: () => readAuthKeys(agentDir),
-        getBaseModels: (base) => byProvider.get(base) ?? [],
-        readSection: (id) => readModelsJsonSection(agentDir, id, (msg) => log.warn(msg)),
-        // Structural cast: see Phase-1 register for the samplingParams note.
-        register: (aliasId, config) => pi.registerProvider(aliasId, config as unknown as ProviderConfig),
-        writeCache: (aliases) => writeAliasCache(agentDir, aliases),
-        warn: (m) => log.warn(m),
-        debug: (m) => log.debug(m),
-      });
-    } catch (err) {
-      log.warn(`Alias sync failed: ${err}`);
-    }
+    runAliasSync(ctx);
   });
 
   // Reset state on session switch
@@ -249,6 +225,51 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
       await cycleModel(ctx);
     },
   });
+
+  // Manual alias re-sync (same code path as session_start Phase 2).
+  pi.registerCommand("fallback-refresh", {
+    description: "Re-sync multi-account alias providers from auth.json and live models",
+    handler: async (_args, ctx) => {
+      const result = runAliasSync(ctx);
+      if (!result) {
+        ctx.ui.notify("Alias refresh failed (see logs).", "error");
+      } else if (result.aborted) {
+        ctx.ui.notify("Alias refresh aborted: could not read auth.json.", "warning");
+      } else {
+        ctx.ui.notify(`Refreshed ${result.registered.length} alias provider(s).`, "info");
+      }
+    },
+  });
+
+  // Phase-2 body shared by session_start and /fallback-refresh.
+  // Post-bind registration takes effect immediately. Never throws — a
+  // throwing session_start handler must not break session boot.
+  function runAliasSync(ctx: ExtensionContext): SyncAliasesResult | undefined {
+    try {
+      const agentDir = getAgentDir();
+      const byProvider = new Map<string, CloneSourceModel[]>();
+      for (const m of ctx.modelRegistry.getAll()) {
+        const provider = (m as { provider?: unknown }).provider;
+        if (typeof provider !== "string") continue;
+        const list = byProvider.get(provider) ?? [];
+        list.push(m as unknown as CloneSourceModel);
+        byProvider.set(provider, list);
+      }
+      return syncAliases({
+        readAuthKeys: () => readAuthKeys(agentDir),
+        getBaseModels: (base) => byProvider.get(base) ?? [],
+        readSection: (id) => readModelsJsonSection(agentDir, id, (msg) => log.warn(msg)),
+        // Structural cast: see Phase-1 register for the samplingParams note.
+        register: (aliasId, config) => pi.registerProvider(aliasId, config as unknown as ProviderConfig),
+        writeCache: (aliases) => writeAliasCache(agentDir, aliases),
+        warn: (m) => log.warn(m),
+        debug: (m) => log.debug(m),
+      });
+    } catch (err) {
+      log.warn(`Alias sync failed: ${err}`);
+      return undefined;
+    }
+  }
 
   // Core cycling logic
   async function cycleModel(ctx: ExtensionContext): Promise<void> {
