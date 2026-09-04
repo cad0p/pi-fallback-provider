@@ -13,6 +13,9 @@
  * recognized.
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 // ---------------------------------------------------------------------------
 // §2. Sibling-slot parser + grouping (pure)
 // ---------------------------------------------------------------------------
@@ -173,5 +176,88 @@ export function buildAliasConfig(
     config.api = baseModels[0].api;
   }
   return config;
+}
+
+// ---------------------------------------------------------------------------
+// §4. models.json inheritance merge (pure) + raw reader
+// ---------------------------------------------------------------------------
+
+/** A `models.json` provider section (base or alias). */
+export interface ModelsJsonProviderSection {
+  name?: string;
+  baseUrl?: string;
+  apiKey?: string;
+  api?: string;
+  oauth?: unknown;
+  headers?: Record<string, string>;
+  compat?: Record<string, unknown>;
+  authHeader?: boolean;
+  models?: unknown;
+  modelOverrides?: unknown;
+  [key: string]: unknown;
+}
+
+export type WarnFn = (message: string) => void;
+
+/** Fields inherited from models.json sections. NEVER apiKey/oauth. */
+const INHERITED_FIELDS = ["headers", "authHeader", "compat", "baseUrl", "name"] as const;
+
+/**
+ * Conditional-fill inheritance from models.json sections.
+ *
+ * Per field (`headers`, `authHeader`, `compat`, `baseUrl`, `name`): the
+ * extension-built alias config wins when set; else the models.json ALIAS
+ * section wins; else the BASE section fills the gap; else the field stays
+ * absent. `baseUrl` is top-level only — cloned per-model `baseUrl` values
+ * are never touched. Header merge is replace-not-merge (no key union).
+ * `apiKey`/`oauth` are never copied. Alias-section custom `models` are
+ * dropped (pi's provider composition replaces the whole catalog when
+ * extension `config.models` is present, so they cannot survive anyway).
+ */
+export function applyInheritance(
+  aliasConfig: AliasProviderConfig,
+  baseSection: ModelsJsonProviderSection | undefined,
+  aliasSection: ModelsJsonProviderSection | undefined,
+): AliasProviderConfig {
+  const out: AliasProviderConfig = { ...aliasConfig };
+  for (const field of INHERITED_FIELDS) {
+    if (out[field] !== undefined) continue;
+    const fromAlias = aliasSection?.[field];
+    if (fromAlias !== undefined) {
+      (out as Record<string, unknown>)[field] = deepClone(fromAlias);
+      continue;
+    }
+    const fromBase = baseSection?.[field];
+    if (fromBase !== undefined) {
+      (out as Record<string, unknown>)[field] = deepClone(fromBase);
+    }
+  }
+  return out;
+}
+
+/**
+ * Read one provider section from `<agentDir>/models.json`. Returns undefined
+ * when the file is missing (normal — nothing to inherit) or holds no such
+ * section. Malformed file → warn + undefined (never throws in the factory
+ * path). Read fresh in BOTH phases; the alias cache stores MODELS ONLY.
+ */
+export function readModelsJsonSection(
+  agentDir: string,
+  providerId: string,
+  warn: WarnFn = console.warn.bind(console),
+): ModelsJsonProviderSection | undefined {
+  let raw: string;
+  try {
+    raw = readFileSync(join(agentDir, "models.json"), "utf-8");
+  } catch {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(raw) as { providers?: Record<string, ModelsJsonProviderSection> };
+    return parsed?.providers?.[providerId];
+  } catch (err) {
+    warn(`[pi-fallback] Could not parse models.json: ${err}`);
+    return undefined;
+  }
 }
 

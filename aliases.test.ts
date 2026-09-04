@@ -1,7 +1,16 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { buildAliasConfig, groupSiblings, parseAliasId } from "./aliases";
-import type { CloneSourceModel } from "./aliases";
+import {
+  applyInheritance,
+  buildAliasConfig,
+  groupSiblings,
+  parseAliasId,
+  readModelsJsonSection,
+} from "./aliases";
+import type { AliasProviderConfig, CloneSourceModel } from "./aliases";
 
 describe("parseAliasId", () => {
   it("splits at the first -<digits> boundary, keeping the rest as account", () => {
@@ -171,5 +180,93 @@ describe("buildAliasConfig", () => {
   it("uses the label override in the provider name", () => {
     const config = buildAliasConfig("opencode-2-work", "opencode", fauxCatalog(), { label: "work" });
     expect(config.name).toBe("opencode (work)");
+  });
+});
+
+describe("applyInheritance", () => {
+  const baseModels = fauxCatalog().slice(0, 1);
+
+  function built(): AliasProviderConfig {
+    return buildAliasConfig("opencode-2", "opencode", baseModels);
+  }
+
+  it("alias-set values win over both sections (replace-not-merge for headers)", () => {
+    const config = { ...built(), headers: { a: "1" } };
+    const out = applyInheritance(
+      config,
+      { headers: { b: "2" }, baseUrl: "https://base.example.com" },
+      { headers: { c: "3" } },
+    );
+    expect(out.headers).toEqual({ a: "1" });
+    expect(out.baseUrl).toBe("https://base.example.com");
+  });
+
+  it("alias section beats base section when the built config lacks the field", () => {
+    const out = applyInheritance(
+      built(),
+      { headers: { b: "2" }, authHeader: true },
+      { headers: { c: "3" } },
+    );
+    expect(out.headers).toEqual({ c: "3" });
+    expect(out.authHeader).toBe(true);
+  });
+
+  it("base section fills the gap, otherwise the field stays absent", () => {
+    const filled = applyInheritance(built(), { authHeader: false, compat: { x: 1 } }, undefined);
+    expect(filled.authHeader).toBe(false);
+    expect(filled.compat).toEqual({ x: 1 });
+    expect("headers" in filled).toBe(false);
+
+    const empty = applyInheritance(built(), undefined, undefined);
+    expect("headers" in empty).toBe(false);
+    expect("authHeader" in empty).toBe(false);
+    expect("compat" in empty).toBe(false);
+    expect("baseUrl" in empty).toBe(false);
+  });
+
+  it("base name fills a config that lacks one", () => {
+    const { name: _dropped, ...withoutName } = built();
+    const out = applyInheritance(withoutName, { name: "Base Name" }, undefined);
+    expect(out.name).toBe("Base Name");
+  });
+
+  it("never inherits apiKey or oauth even when the base section has them", () => {
+    const out = applyInheritance(
+      built(),
+      { apiKey: "sk-secret", oauth: { name: "x" }, headers: { h: "1" } },
+      undefined,
+    );
+    expect("apiKey" in out).toBe(false);
+    expect("oauth" in out).toBe(false);
+    expect(JSON.stringify(out)).not.toContain("sk-secret");
+  });
+
+  it("leaves cloned per-model baseUrl values untouched (top-level only)", () => {
+    const out = applyInheritance(built(), { baseUrl: "https://base.example.com" }, undefined);
+    expect(out.baseUrl).toBe("https://base.example.com");
+    expect(out.models![0].baseUrl).toBe("https://api.example.com");
+  });
+});
+
+describe("readModelsJsonSection", () => {
+  it("reads sections from a tmp agent dir; missing/invalid handled gracefully", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-fallback-test-"));
+    // Missing file → undefined, no warn.
+    const warnings: string[] = [];
+    expect(readModelsJsonSection(dir, "opencode", (m) => warnings.push(m))).toBeUndefined();
+    expect(warnings).toEqual([]);
+
+    // Valid file → section returned; unknown provider → undefined.
+    writeFileSync(
+      join(dir, "models.json"),
+      JSON.stringify({ providers: { opencode: { baseUrl: "https://x.example.com" } } }),
+    );
+    expect(readModelsJsonSection(dir, "opencode")?.baseUrl).toBe("https://x.example.com");
+    expect(readModelsJsonSection(dir, "nope")).toBeUndefined();
+
+    // Invalid JSON → warn + undefined, never throws.
+    writeFileSync(join(dir, "models.json"), "{not json");
+    expect(readModelsJsonSection(dir, "opencode", (m) => warnings.push(m))).toBeUndefined();
+    expect(warnings).toHaveLength(1);
   });
 });
