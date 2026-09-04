@@ -22,10 +22,10 @@ import type { ExtensionAPI, ExtensionContext, ProviderConfig } from "@earendil-w
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { matchesKey } from "@earendil-works/pi-tui";
 import type { TUI } from "@earendil-works/pi-tui";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 
 import {
+  buildModelOrder,
+  indexOfScoped,
   readAliasCache,
   readAuthKeys,
   readModelsJsonSection,
@@ -48,9 +48,6 @@ const PROGRESS_TIMEOUT_MS = 20_000;
 /** Prompt sent after switching models so the agent continues from context. */
 const FALLBACK_PROMPT = "continue";
 
-/** Path to pi settings file. */
-const SETTINGS_PATH = join(getAgentDir(), "settings.json");
-
 /** Debug logging. */
 const DEBUG =
   process.env.PI_FALLBACK_DEBUG === "true" ||
@@ -69,10 +66,7 @@ const log = {
 /** Active progress timer. */
 let progressTimer: ReturnType<typeof setTimeout> | null = null;
 
-/** Scoped models from settings.json (enabledModels). */
-let scopedModels: string[] | null = null;
-
-/** Position cursor in the enabledModels array for round-robin. */
+/** Position cursor in the scoped-models array for round-robin. */
 let fallbackCursor = 0;
 
 /** Countdown interval for status bar updates. */
@@ -105,56 +99,12 @@ function modelKey(provider: string, id: string): string {
   return `${provider}/${id}`;
 }
 
-/** Split a "provider/id" string (id may contain slashes). */
-function parseModelEntry(s: string): { provider: string; id: string } {
-  const slash = s.indexOf("/");
-  if (slash === -1) return { provider: "", id: s };
-  return { provider: s.slice(0, slash), id: s.slice(slash + 1) };
-}
-
-/**
- * Load scoped models from settings.json (enabledModels field).
- * Returns null if no enabledModels configured (falls back to all available).
- */
-function loadScopedModels(): string[] | null {
-  try {
-    const raw = readFileSync(SETTINGS_PATH, "utf-8");
-    const settings = JSON.parse(raw);
-    if (Array.isArray(settings.enabledModels) && settings.enabledModels.length > 0) {
-      log.debug(`Loaded ${settings.enabledModels.length} scoped models from settings`);
-      return settings.enabledModels;
-    }
-  } catch (err) {
-    log.warn(`Could not read settings from ${SETTINGS_PATH}: ${err}`);
-  }
-  return null;
-}
-
-/** Build the ordered list of models to try.
- *  Walks enabledModels from fallbackCursor, skipping the current model. */
-function buildModelOrder(
-  currentProvider: string,
-  currentId: string,
-): Array<{ provider: string; id: string }> {
-  const src = scopedModels;
-  if (!src || src.length === 0) return [];
-
-  const order: Array<{ provider: string; id: string }> = [];
-  for (let i = 0; i < src.length; i++) {
-    const { provider, id } = parseModelEntry(src[(fallbackCursor + i) % src.length]);
-    if (provider === currentProvider && id === currentId) continue;
-    order.push({ provider, id });
-  }
-  return order;
-}
-
 // ---------------------------------------------------------------------------
 // Extension
 // ---------------------------------------------------------------------------
 
 export default function piFallbackProvider(pi: ExtensionAPI) {
   log.debug("Loading extension");
-  scopedModels = loadScopedModels();
 
   // Phase 1 (multi-account): register alias providers from the MODELS-ONLY
   // cache file. Graceful when absent (first run heals on session_start).
@@ -315,7 +265,12 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
       return;
     }
 
-    const order = buildModelOrder(current.provider, current.id);
+    const scoped = ctx.scopedModels ?? [];
+    if (ctx.scopedModels == null) {
+      // Old pi without live scoping (needs pi >= v0.83.0) — no file fallback.
+      log.warn("ctx.scopedModels is unavailable (pi >= v0.83.0 required) — cannot build fallback order");
+    }
+    const order = buildModelOrder(scoped, current.provider, current.id, fallbackCursor);
     if (order.length === 0) {
       log.warn("No models available to cycle to");
       ctx.ui.notify("No fallback models available.", "error");
@@ -348,13 +303,10 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
         continue;
       }
 
-      // Success — advance cursor past this model in the enabledModels list
-      if (scopedModels) {
-        const modelIdx = scopedModels.findIndex((s) => {
-          const { provider: sp, id: sid } = parseModelEntry(s);
-          return sp === candidate.provider && sid === candidate.id;
-        });
-        if (modelIdx >= 0) fallbackCursor = (modelIdx + 1) % scopedModels.length;
+      // Success — advance cursor past this model in the live scope array
+      if (scoped.length > 0) {
+        const modelIdx = indexOfScoped(scoped, candidate.provider, candidate.id);
+        if (modelIdx >= 0) fallbackCursor = (modelIdx + 1) % scoped.length;
       }
 
       ctx.ui.notify(`Switched to ${key} (previous model failed)`, "info");

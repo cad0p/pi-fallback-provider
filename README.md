@@ -26,6 +26,9 @@ agent_end fires with stopReason === "error"
 
 ## Install
 
+Requires pi **>= v0.83.0** (first release exposing the live `ctx.scopedModels`
+the fallback order walks).
+
 Install the latest released version:
 
 ```bash

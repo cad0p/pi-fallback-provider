@@ -554,3 +554,50 @@ export function syncAliases(deps: SyncAliasesDeps): SyncAliasesResult {
   return { registered, skipped, aborted: false };
 }
 
+// ---------------------------------------------------------------------------
+// §8. Cycle ordering over live ctx.scopedModels (pure)
+// ---------------------------------------------------------------------------
+
+/** Minimal structural view of pi's ScopedModel (`{ model, thinkingLevel? }`). */
+export interface ScopedEntry {
+  model: { provider: string; id: string };
+  thinkingLevel?: unknown;
+}
+
+/** Split a "provider/id" string (id may contain slashes). */
+export function parseModelEntry(s: string): { provider: string; id: string } {
+  const slash = s.indexOf("/");
+  if (slash === -1) return { provider: "", id: s };
+  return { provider: s.slice(0, slash), id: s.slice(slash + 1) };
+}
+
+/**
+ * Build the ordered list of models to try: walk the live scope from the
+ * cursor, skipping the current model. Empty scope → no candidates.
+ */
+export function buildModelOrder(
+  scoped: ReadonlyArray<ScopedEntry>,
+  currentProvider: string,
+  currentId: string,
+  cursor: number,
+): Array<{ provider: string; id: string }> {
+  if (scoped.length === 0) return [];
+  const start = ((cursor % scoped.length) + scoped.length) % scoped.length;
+  const order: Array<{ provider: string; id: string }> = [];
+  for (let i = 0; i < scoped.length; i++) {
+    const entry = scoped[(start + i) % scoped.length];
+    if (entry.model.provider === currentProvider && entry.model.id === currentId) continue;
+    order.push({ provider: entry.model.provider, id: entry.model.id });
+  }
+  return order;
+}
+
+/** Index of a provider/id in the live scope (-1 when absent). */
+export function indexOfScoped(
+  scoped: ReadonlyArray<ScopedEntry>,
+  provider: string,
+  id: string,
+): number {
+  return scoped.findIndex((e) => e.model.provider === provider && e.model.id === id);
+}
+
