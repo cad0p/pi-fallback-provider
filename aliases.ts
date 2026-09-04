@@ -469,3 +469,88 @@ export function registerCachedAliases(deps: Phase1Deps): string[] {
   return registered;
 }
 
+// ---------------------------------------------------------------------------
+// §7. Phase 2 — session_start live-clone + cache rewrite (injectable core)
+// ---------------------------------------------------------------------------
+
+export interface SyncAliasesDeps {
+  readAuthKeys: () => string[];
+  getBaseModels: (base: string) => CloneSourceModel[];
+  readSection: (providerId: string) => ModelsJsonProviderSection | undefined;
+  register: (aliasId: string, config: AliasProviderConfig) => void;
+  writeCache: (aliases: Record<string, AliasCacheEntry>) => void;
+  warn?: WarnFn;
+  debug?: WarnFn;
+}
+
+export interface SyncAliasesResult {
+  registered: string[];
+  skipped: string[];
+  aborted: boolean;
+}
+
+/**
+ * Live-clone base catalogs into alias providers (Phase 2).
+ *
+ * Reads auth.json KEYS only (values are never logged); malformed file →
+ * warn + abort sync, never throw. Each sibling group resolves its base via
+ * `getBaseModels` (live composed `ctx.modelRegistry.getAll()` grouped by
+ * `model.provider`, so base upserts/overrides transfer automatically) —
+ * unknown/empty base catalog → warn-and-skip. Fresh models.json
+ * inheritance is applied per alias, then `register` (post-bind → immediate
+ * effect). The cache is rewritten with the live models, pruning dead
+ * aliases. Idempotent: same-id re-registration replaces.
+ */
+export function syncAliases(deps: SyncAliasesDeps): SyncAliasesResult {
+  const warn = deps.warn ?? (() => {});
+  const debug = deps.debug ?? (() => {});
+  let keys: string[];
+  try {
+    keys = deps.readAuthKeys();
+  } catch (err) {
+    warn(`[pi-fallback] Could not read auth.json, aborting alias sync: ${err}`);
+    return { registered: [], skipped: [], aborted: true };
+  }
+  const registered: string[] = [];
+  const skipped: string[] = [];
+  const cache: Record<string, AliasCacheEntry> = {};
+  for (const [base, aliasIds] of groupSiblings(keys)) {
+    let baseModels: CloneSourceModel[];
+    try {
+      baseModels = deps.getBaseModels(base);
+    } catch (err) {
+      warn(`[pi-fallback] Could not list models for base provider "${base}": ${err}`);
+      skipped.push(...aliasIds);
+      continue;
+    }
+    if (!baseModels || baseModels.length === 0) {
+      warn(`[pi-fallback] Unknown base provider "${base}" — skipping alias(es) ${aliasIds.join(", ")}`);
+      skipped.push(...aliasIds);
+      continue;
+    }
+    for (const aliasId of aliasIds) {
+      const account = parseAliasId(aliasId)?.account ?? aliasId;
+      try {
+        const config = applyInheritance(
+          buildAliasConfig(aliasId, base, baseModels),
+          deps.readSection(base),
+          deps.readSection(aliasId),
+        );
+        deps.register(aliasId, config);
+        registered.push(aliasId);
+        cache[aliasId] = { base, account, models: config.models ?? [] };
+      } catch (err) {
+        warn(`[pi-fallback] Failed to sync alias "${aliasId}": ${err}`);
+        skipped.push(aliasId);
+      }
+    }
+  }
+  try {
+    deps.writeCache(cache);
+  } catch (err) {
+    warn(`[pi-fallback] Could not write alias model cache: ${err}`);
+  }
+  debug(`[pi-fallback] Alias sync: ${registered.length} registered, ${skipped.length} skipped`);
+  return { registered, skipped, aborted: false };
+}
+

@@ -11,9 +11,10 @@ import {
   readAliasCache,
   readModelsJsonSection,
   registerCachedAliases,
+  syncAliases,
   writeAliasCache,
 } from "./aliases";
-import type { Phase1Deps } from "./aliases";
+import type { Phase1Deps, SyncAliasesDeps } from "./aliases";
 import type { AliasProviderConfig, CloneSourceModel } from "./aliases";
 
 describe("parseAliasId", () => {
@@ -422,5 +423,103 @@ describe("registerCachedAliases (Phase 1)", () => {
     expect(registerCachedAliases(t.deps)).toEqual([]);
     expect(t.registered).toEqual([]);
     expect(t.warnings).toHaveLength(1);
+  });
+});
+
+describe("syncAliases (Phase 2)", () => {
+  const liveModels = [
+    {
+      id: "model-a",
+      name: "Model A",
+      api: "anthropic-messages",
+      baseUrl: "https://api.example.com",
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 100000,
+      maxTokens: 8192,
+    },
+  ];
+
+  function deps(overrides: Partial<SyncAliasesDeps> = {}) {
+    const registered: Array<{ aliasId: string; config: unknown }> = [];
+    const warnings: string[] = [];
+    let written: Record<string, unknown> | undefined;
+    return {
+      registered,
+      warnings,
+      get written() {
+        return written;
+      },
+      deps: {
+        readAuthKeys: () => ["opencode", "opencode-2", "opencode-2-work", "opencode-personal"],
+        getBaseModels: (base: string) => (base === "opencode" ? structuredClone(liveModels) : []),
+        readSection: () => undefined,
+        register: (aliasId: string, config: unknown) => {
+          registered.push({ aliasId, config });
+        },
+        writeCache: (aliases: Record<string, unknown>) => {
+          written = aliases;
+        },
+        warn: (m: string) => warnings.push(m),
+        ...overrides,
+      } as SyncAliasesDeps,
+    };
+  }
+
+  it("clones live models per sibling, skips non-numeric suffixes, writes cache", () => {
+    const t = deps();
+    const result = syncAliases(t.deps);
+    expect(result).toEqual({ registered: ["opencode-2", "opencode-2-work"], skipped: [], aborted: false });
+    expect(t.registered.map((r) => r.aliasId)).toEqual(["opencode-2", "opencode-2-work"]);
+    const config = t.registered[0].config as { name: string; models: unknown[] };
+    expect(config.name).toBe("opencode (2)");
+    expect(config.models).toHaveLength(1);
+    expect(JSON.stringify(t.registered)).not.toContain("apiKey");
+    expect(Object.keys(t.written ?? {}).sort()).toEqual(["opencode-2", "opencode-2-work"]);
+    expect(t.warnings).toEqual([]);
+  });
+
+  it("aborts with warn (no register, no cache write) on malformed auth.json", () => {
+    let wrote = false;
+    const t = deps({
+      readAuthKeys: () => {
+        throw new SyntaxError("Unexpected token");
+      },
+      writeCache: () => {
+        wrote = true;
+      },
+    });
+    const result = syncAliases(t.deps);
+    expect(result.aborted).toBe(true);
+    expect(t.registered).toEqual([]);
+    expect(wrote).toBe(false);
+    expect(t.warnings).toHaveLength(1);
+  });
+
+  it("warn-and-skips unknown-base aliases without touching the cache for them", () => {
+    const t = deps({ getBaseModels: () => [] });
+    const result = syncAliases(t.deps);
+    expect(result.registered).toEqual([]);
+    expect(result.skipped).toEqual(["opencode-2", "opencode-2-work"]);
+    expect(result.aborted).toBe(false);
+    expect(t.warnings).toHaveLength(1);
+    expect(t.written).toEqual({});
+  });
+
+  it("skips a failing alias registration and continues with the rest", () => {
+    const seen: string[] = [];
+    const t2 = deps({
+      register: (aliasId: string) => {
+        if (aliasId === "opencode-2") throw new Error("validation boom");
+        seen.push(aliasId);
+      },
+    });
+    const result = syncAliases(t2.deps);
+    expect(result.registered).toEqual(["opencode-2-work"]);
+    expect(result.skipped).toEqual(["opencode-2"]);
+    expect(seen).toEqual(["opencode-2-work"]);
+    expect(Object.keys(t2.written ?? {})).toEqual(["opencode-2-work"]);
+    expect(t2.warnings).toHaveLength(1);
   });
 });
