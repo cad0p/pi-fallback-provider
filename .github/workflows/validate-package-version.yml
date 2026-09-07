@@ -8,8 +8,7 @@ permissions:
   contents: read
 
 jobs:
-  validate:
+  validate-package-version:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
       - uses: cad0p/semver-calver-release/validate-package-version@v1
