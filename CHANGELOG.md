@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [0.2.0] - 2026-09-07
 
 <!-- USER-EDITABLE SECTION START -->
-<!-- Add your curated release notes here. -->
+- Multi account support! Just add another account in `auth.json` for the same provider, for example for `openrouter`, you can add `openrouter-2` or `openrouter-2-personal`. The models will appear automatically at the next pi instance. Add them to scoped models like normal to achieve automatic fallback. Only api keys supported, not OAuth for now.
 <!-- USER-EDITABLE SECTION END -->
 
 ### 🚀 Features
