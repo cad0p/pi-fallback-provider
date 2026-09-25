@@ -583,6 +583,42 @@ describe("createBoundaryHandler — bail-outs", () => {
   });
 });
 
+describe("createBoundaryHandler — stale context", () => {
+  it("bails out without switching when the branch read throws", async () => {
+    const deps = makeDeps();
+    const ctx = readyContext();
+    ctx.sessionManager = {
+      getBranch() {
+        throw new Error("ctx is stale");
+      },
+    };
+    const event = makeEvent({
+      context: { contextEntries: [tailError("e1")], canContinue: false },
+    });
+
+    await expect(createBoundaryHandler(deps)(event, ctx)).resolves.toBeUndefined();
+    expect(deps.setModel).not.toHaveBeenCalled();
+    expect(ctx.ui.setStatus).toHaveBeenCalledWith(STATUS_KEY, undefined);
+    expect(deps.debug).toHaveBeenCalledWith(expect.stringContaining("host read failed"));
+  });
+
+  it("bails out without switching when the availability read throws", async () => {
+    const deps = makeDeps();
+    const ctx = readyContext();
+    ctx.modelRegistry.getAvailable = () => {
+      throw new Error("registry gone");
+    };
+    const event = makeEvent({
+      context: { contextEntries: [tailError("e1")], canContinue: false },
+    });
+
+    await expect(createBoundaryHandler(deps)(event, ctx)).resolves.toBeUndefined();
+    expect(deps.setModel).not.toHaveBeenCalled();
+    expect(ctx.ui.setStatus).toHaveBeenCalledWith(STATUS_KEY, undefined);
+    expect(deps.debug).toHaveBeenCalledWith(expect.stringContaining("host read failed"));
+  });
+});
+
 describe("createBoundaryHandler — candidate failure handling", () => {
   it("skips a throwing candidate and switches to the next one exactly once", async () => {
     const deps = makeDeps({

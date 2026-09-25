@@ -129,6 +129,20 @@ export function isLastModelVisibleErrorEntry(
   return false;
 }
 
+/** Candidate order computed from already-captured host reads. */
+function candidateOrderFrom(
+  scoped: readonly ScopedEntry[],
+  current: { provider: string; id: string } | null | undefined,
+  registry: BoundaryContextLike["modelRegistry"],
+  cursor: number,
+): Array<{ provider: string; id: string }> {
+  const order = buildModelOrder(scoped, current?.provider ?? "", current?.id ?? "", cursor);
+  const available = new Set(
+    registry.getAvailable().map((model) => `${model.provider}/${model.id}`),
+  );
+  return order.filter((model) => available.has(`${model.provider}/${model.id}`));
+}
+
 /**
  * Scoped models to try, in order: the live scope walked from the cursor with
  * the current model skipped, filtered to models the registry reports as
@@ -138,16 +152,7 @@ export function candidateOrder(
   ctx: BoundaryContextLike,
   cursor: number,
 ): Array<{ provider: string; id: string }> {
-  const order = buildModelOrder(
-    ctx.scopedModels ?? [],
-    ctx.model?.provider ?? "",
-    ctx.model?.id ?? "",
-    cursor,
-  );
-  const available = new Set(
-    ctx.modelRegistry.getAvailable().map((model) => `${model.provider}/${model.id}`),
-  );
-  return order.filter((model) => available.has(`${model.provider}/${model.id}`));
+  return candidateOrderFrom(ctx.scopedModels ?? [], ctx.model, ctx.modelRegistry, cursor);
 }
 
 /** First candidate as a `provider/id` label, or `undefined` when none exist. */
@@ -220,25 +225,41 @@ export function createBoundaryHandler(deps: BoundaryDeps): (
     if (event.outcome !== "error") return undefined;
     deps.debug("agent_before_settle error");
 
-    const targetId = findLastErroredAssistantEntryId(ctx.sessionManager.getBranch());
-
     let draft: ContextEditDraft | undefined;
-    if (targetId && isLastModelVisibleErrorEntry(event.context.contextEntries, targetId)) {
-      if (!event.context.canContinue) {
-        draft = { type: "context_edit", targetId, replacement: null };
-        deps.debug(`omitting failed attempt ${targetId} from model context`);
+    let order: Array<{ provider: string; id: string }>;
+    let registry: BoundaryContextLike["modelRegistry"];
+    let scoped: readonly ScopedEntry[];
+    let previous: string;
+
+    try {
+      const targetId = findLastErroredAssistantEntryId(ctx.sessionManager.getBranch());
+
+      if (targetId && isLastModelVisibleErrorEntry(event.context.contextEntries, targetId)) {
+        if (!event.context.canContinue) {
+          draft = { type: "context_edit", targetId, replacement: null };
+          deps.debug(`omitting failed attempt ${targetId} from model context`);
+        } else {
+          deps.debug(`errored tail ${targetId} with canContinue — no draft needed`);
+        }
+      } else if (event.context.canContinue) {
+        deps.debug("pi already omitted the failed attempt — no draft needed");
       } else {
-        deps.debug(`errored tail ${targetId} with canContinue — no draft needed`);
+        deps.debug("no model-visible errored tail to omit — bailing out");
+        clearStatus(ctx, deps.debug);
+        return undefined;
       }
-    } else if (event.context.canContinue) {
-      deps.debug("pi already omitted the failed attempt — no draft needed");
-    } else {
-      deps.debug("no model-visible errored tail to omit — bailing out");
+
+      scoped = ctx.scopedModels ?? [];
+      const current = ctx.model;
+      registry = ctx.modelRegistry;
+      order = candidateOrderFrom(scoped, current, registry, deps.getCursor());
+      previous = current ? `${current.provider}/${current.id}` : "unknown";
+    } catch (err) {
+      deps.debug(`host read failed: ${err}`);
       clearStatus(ctx, deps.debug);
       return undefined;
     }
 
-    const order = candidateOrder(ctx, deps.getCursor());
     if (order.length === 0) {
       deps.debug("no authenticated fallback candidates");
       clearStatus(ctx, deps.debug);
@@ -246,10 +267,9 @@ export function createBoundaryHandler(deps: BoundaryDeps): (
       return undefined;
     }
 
-    const previous = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "unknown";
     for (const candidate of order) {
       const key = `${candidate.provider}/${candidate.id}`;
-      const model = ctx.modelRegistry.find(candidate.provider, candidate.id);
+      const model = registry.find(candidate.provider, candidate.id);
       if (!model) {
         deps.debug(`candidate not in registry: ${key}`);
         continue;
@@ -267,7 +287,6 @@ export function createBoundaryHandler(deps: BoundaryDeps): (
         continue;
       }
 
-      const scoped = ctx.scopedModels ?? [];
       const idx = indexOfScoped(scoped, candidate.provider, candidate.id);
       if (idx >= 0) deps.setCursor((idx + 1) % scoped.length);
       deps.debug(`switched model ${previous} → ${key}`);
