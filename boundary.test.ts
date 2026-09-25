@@ -347,6 +347,29 @@ describe("createBoundaryHandler — omission draft", () => {
     expect(deps.setModel).toHaveBeenCalledTimes(1);
     expect(deps.setModel).toHaveBeenCalledWith({ provider: "b", id: "m2" });
     expect(ctx.ui.setStatus).toHaveBeenCalledWith(STATUS_KEY, undefined);
+    expect(ctx.ui.notify).not.toHaveBeenCalled();
+    expect(deps.debug).toHaveBeenCalledWith(
+      expect.stringContaining("switched model a/m1 → b/m2"),
+    );
+  });
+
+  it("drafts the omission when a toolResult precedes the errored tail", async () => {
+    const deps = makeDeps();
+    const ctx = readyContext([branchMessage("e2", "error")]);
+    const event = makeEvent({
+      context: {
+        contextEntries: [projected("t1", "toolResult"), tailError("e2")],
+        canContinue: false,
+      },
+    });
+
+    const result = await createBoundaryHandler(deps)(event, ctx);
+
+    expect(result).toEqual({
+      entries: [{ type: "context_edit", targetId: "e2", replacement: null }],
+      continue: true,
+    });
+    expect(deps.setModel).toHaveBeenCalledWith({ provider: "b", id: "m2" });
   });
 
   it("preserves drafts returned by earlier handlers", async () => {
@@ -466,6 +489,19 @@ describe("createBoundaryHandler — bail-outs", () => {
         contextEntries: [tailError("e1"), projected("later", "user")],
         canContinue: false,
       },
+    });
+
+    await expect(createBoundaryHandler(deps)(event, ctx)).resolves.toBeUndefined();
+    expect(deps.setModel).not.toHaveBeenCalled();
+    expect(ctx.ui.setStatus).toHaveBeenCalledWith(STATUS_KEY, undefined);
+    expect(deps.debug).toHaveBeenCalled();
+  });
+
+  it("bails out on an empty projection that cannot continue", async () => {
+    const deps = makeDeps();
+    const ctx = readyContext();
+    const event = makeEvent({
+      context: { contextEntries: [], canContinue: false },
     });
 
     await expect(createBoundaryHandler(deps)(event, ctx)).resolves.toBeUndefined();
