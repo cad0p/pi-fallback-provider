@@ -31,8 +31,11 @@ terminal error
 - **Appends nothing** — the failed attempt is omitted from future model
   context via an append-only `context_edit`; a `continue` message is never
   injected
-- **Skips user aborts** — only triggers on an errored settle, not `"aborted"`
-  (ESC)
+- **Aborts are not triggers** — `"aborted"` (ESC) turns never start a
+  fallback. ESC during pi's retry backoff cancels that retry, but the
+  settlement boundary still switches models; only the re-issue can be dropped
+  by an abort during the boundary itself, and pi commits the context edit
+  before checking that abort
 - **Scoped ordering** — when `enabledModels` is configured, cycles through
   that list in order
 
