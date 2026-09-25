@@ -23,6 +23,11 @@ terminal error
 - **No error classification** — works for any error type
 - **Waits for pi's own recovery** — fires only after retries, auto-compaction,
   and queued continuations are exhausted; no timer heuristics
+- **Pre-announce banner** — after an errored turn, the footer shows
+  `⚠ error — next: <provider>/<id> if retries fail` while pi retries. It
+  clears on a successful or completed turn, a fresh prompt, a successful
+  switch, when no candidate exists, and on session shutdown; all status
+  updates are UI-gated
 - **Appends nothing** — the failed attempt is omitted from future model
   context via an append-only `context_edit`; a `continue` message is never
   injected
