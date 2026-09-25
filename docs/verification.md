@@ -105,7 +105,7 @@ the evidence (commands, output, session JSONL path) in the PR.
 
 | Change type | Live proof |
 |---|---|
-| Core fallback switch (`boundary.ts`, `index.ts` wiring) | Real pi session with `enabledModels` = [alias whose auth is a deliberately bogus key, a good model] and the bogus alias as the current model. Force a terminal error on the bogus alias; assert: exactly one model switch; the session JSONL contains exactly one `context_edit` entry with `replacement: null` targeting the failed assistant entry; **zero** appended user messages containing `continue`. |
+| Core fallback switch (`boundary.ts`, `index.ts` wiring) | Real pi session with `enabledModels` = [alias whose auth is a deliberately bogus key, a good model] and the bogus alias as the current model. Force a terminal error on the bogus alias; assert: exactly one model switch; the session JSONL contains exactly one `context_edit` entry with `replacement: null` targeting the final failed assistant entry (beyond pi's own retry omissions); **zero** appended user messages containing `continue`. |
 | TUI pre-announce banner | tmux session: capture `tmux capture-pane -p -J` during the retry window (banner present, byte-exact against the constant) and after the switch (banner cleared). |
 | Alias registration (`aliases.ts`) | Temp `PI_CODING_AGENT_DIR` with a fixture `auth.json`: assert the alias providers register with the expected model catalogs and the cache file is written/pruned. |
 | Docs-only | CI green on the head SHA; links and commands in the change actually exist (spot-check anything command-like). No live run required — state so explicitly in the PR. |
