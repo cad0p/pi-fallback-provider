@@ -8,21 +8,28 @@ When an LLM provider fails (rate limit, context overflow, content policy, etc.),
 
 ## How this extension helps
 
-Instead of classifying errors or intercepting at the transport layer, this extension uses **progress detection**:
+Instead of classifying errors or intercepting at the transport layer, this
+extension rides pi's settle boundary:
 
 ```
-agent_end fires with stopReason === "error"
-  → start 20s timer
-  → if turn_start fires → cancel timer (pi is making progress)
-  → if timer expires → cycle to next model, send "continue"
+terminal error
+  → pi's own recovery runs: retries, auto-compaction, queued continuations
+  → agent_before_settle fires (no automatic recovery left)
+  → omit the failed assistant attempt via a model-context edit
+  → switch to the next authenticated model
+  → pi continues from the same context point — no message is appended
 ```
 
 - **No error classification** — works for any error type
-- **Respects pi's retries** — 20s timeout gives pi's built-in retry (3 retries × exponential backoff ≈ 14s) a chance to finish
-- **Sends `continue` after switching** — resumes from the current agent context instead of replaying a stale user request
-- **Resets on each failure** — each `agent_end` with error resets the timer, so it waits for the *last* failure's quiet period
-- **Skips user aborts** — only triggers on `stopReason === "error"`, not `"aborted"` (ESC)
-- **Scoped ordering** — when `enabledModels` is configured, cycles through that list in order
+- **Waits for pi's own recovery** — fires only after retries, auto-compaction,
+  and queued continuations are exhausted; no timer heuristics
+- **Appends nothing** — the failed attempt is omitted from future model
+  context via an append-only `context_edit`; a `continue` message is never
+  injected
+- **Skips user aborts** — only triggers on an errored settle, not `"aborted"`
+  (ESC)
+- **Scoped ordering** — when `enabledModels` is configured, cycles through
+  that list in order
 
 ## Install
 
@@ -57,9 +64,7 @@ Set `PI_FALLBACK_DEBUG=true` for verbose logging:
 PI_FALLBACK_DEBUG=true pi
 ```
 
-## Manual trigger
-
-Use `/cycle-model` to manually cycle to the next available model and send `continue`.
+## Manual alias refresh
 
 Use `/fallback-refresh` to manually re-sync multi-account alias providers
 from `auth.json` and the live model catalog (same code path `session_start`
@@ -149,7 +154,7 @@ two loops don't fight over the same account slots.
 | **pi-retry** | `agent_end` hook, same-model retry | Only `aborted` | ❌ Same model |
 | **pi-model-switch** | LLM tool for manual switching | ❌ | ✅ Manual |
 | **pi-cycle** | F8 hotkey, profile cycling | ❌ | ✅ Manual |
-| **This extension** | `agent_end` + progress timer | ✅ Any error | ✅ Automatic |
+| **This extension** | `agent_before_settle` + model-context edit | ✅ Any error | ✅ Automatic |
 
 ## License
 
