@@ -41,7 +41,21 @@ describe("boundary wiring regression", () => {
     expect(source).toContain("await onTurnEnd(event, ctx)");
   });
 
-  it("registers the agent_settled banner backstop", () => {
-    expect(readFileSync("index.ts", "utf-8")).toContain('pi.on("agent_settled"');
+  it("registers the agent_settled banner backstop that clears the status", () => {
+    const source = readFileSync("index.ts", "utf-8");
+    expect(source).toContain('pi.on("agent_settled"');
+    const settledBody = source.slice(
+      source.indexOf('pi.on("agent_settled"'),
+      source.indexOf('pi.on("before_agent_start"'),
+    );
+    expect(settledBody).toContain("clearStatus(ctx, debug)");
+  });
+
+  it("registers the fresh-prompt and session-shutdown banner handlers", () => {
+    const source = readFileSync("index.ts", "utf-8");
+    expect(source).toContain('pi.on("before_agent_start"');
+    expect(source).toContain('pi.on("session_shutdown"');
+    const clears = source.match(/clearStatus\(ctx, debug\)/g) ?? [];
+    expect(clears.length).toBeGreaterThanOrEqual(3);
   });
 });
