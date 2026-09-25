@@ -28,7 +28,7 @@ Every PR to `main` runs:
 | `install-check` | `ci.yml` | `pnpm install --frozen-lockfile` under pnpm 11 — an unapproved build script (`ERR_PNPM_IGNORED_BUILDS`) fails CI instead of breaking `pi update` locally. |
 | `test` | `ci.yml` | `pnpm install --frozen-lockfile` then `pnpm test` (vitest, `*.test.ts` at the repo root, fully offline). |
 | `validate-package-version` | `validate-package-version.yml` | Feature branches must **not** bump the `package.json` `version` or edit `CHANGELOG.md`; release PRs own both. |
-| `validate-release-pr` | `validate-release-pr.yml` | Release-PR shape only; green or path-gated skip on ordinary PRs. |
+| `validate-release-pr` | `validate-release-pr.yml` | Release-PR shape only; the action exits successfully for ordinary PRs. |
 
 `Auto Release` (`release.yml`) runs on pushes to `main` / `release/*`, not on
 pull requests, so it is not a PR gate.
@@ -41,9 +41,9 @@ gh pr checks <pr> --watch    # wait until all checks settle
 gh run view <run-id> --log   # full log when something is red
 ```
 
-Anything other than a pass (or a legitimate path-gated skip) is a blocker: fix
-on the branch and re-verify — a review verdict applies to the commit it
-reviewed, so a new push needs a fresh pass (§3).
+Anything other than a pass is a blocker: fix on the branch and re-verify — a
+review verdict applies to the commit it reviewed, so a new push needs a fresh
+pass (§3).
 
 ## 3. Independent review protocol
 
