@@ -51,6 +51,13 @@ describe("boundary wiring regression", () => {
     expect(turnEndBody).not.toContain("onBoundary(event, ctx)");
   });
 
+  it("forwards the live registry model to pi.setModel", () => {
+    const source = readFileSync("index.ts", "utf-8");
+    expect(source).toContain(
+      'setModel: (model) => pi.setModel(model as Parameters<ExtensionAPI["setModel"]>[0])',
+    );
+  });
+
   it("registers the agent_settled banner backstop that clears the status", () => {
     const source = readFileSync("index.ts", "utf-8");
     expect(source).toContain('pi.on("agent_settled"');
