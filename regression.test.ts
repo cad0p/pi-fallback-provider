@@ -23,3 +23,15 @@ describe("no-message-injection regression", () => {
     expect(readFileSync("index.ts", "utf-8")).not.toContain('registerCommand("cycle-model"');
   });
 });
+
+/**
+ * `index.ts` cannot be imported under vitest (pi modules resolve only inside
+ * the real agent), so the boundary trigger is pinned at the source level.
+ */
+describe("boundary wiring regression", () => {
+  it("registers the settle-boundary and turn_end handlers", () => {
+    const source = readFileSync("index.ts", "utf-8");
+    expect(source).toContain('pi.on("agent_before_settle"');
+    expect(source).toContain('pi.on("turn_end"');
+  });
+});
