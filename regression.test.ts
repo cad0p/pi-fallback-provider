@@ -34,4 +34,8 @@ describe("boundary wiring regression", () => {
     expect(source).toContain('pi.on("agent_before_settle"');
     expect(source).toContain('pi.on("turn_end"');
   });
+
+  it("registers the agent_settled banner backstop", () => {
+    expect(readFileSync("index.ts", "utf-8")).toContain('pi.on("agent_settled"');
+  });
 });

@@ -116,6 +116,12 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
     await onTurnEnd(event, ctx);
   });
 
+  // Backstop: a run aborted during retry backoff emits no further turn_end,
+  // so clear the banner when the run settles.
+  pi.on("agent_settled", async (_event, ctx) => {
+    clearStatus(ctx, debug);
+  });
+
   // A fresh user prompt means the episode is over — drop the banner.
   pi.on("before_agent_start", async (_event, ctx) => {
     clearStatus(ctx, debug);
