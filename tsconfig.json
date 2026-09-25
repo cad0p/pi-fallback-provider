@@ -11,6 +11,7 @@
   // NOTE: index.ts is intentionally excluded — its pi imports
   // (@earendil-works/pi-*) resolve at runtime via pi's extension loader,
   // and this package carries no pi dev-dependency by design. Only the
-  // framework-free helpers (aliases.ts) and their tests are typechecked.
-  "include": ["aliases.ts", "*.test.ts", "vitest.config.mts"]
+  // framework-free modules (aliases.ts, boundary.ts) and their tests are
+  // typechecked.
+  "include": ["aliases.ts", "boundary.ts", "*.test.ts", "vitest.config.mts"]
 }

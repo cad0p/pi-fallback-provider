@@ -7,10 +7,9 @@
  *
  * Sibling-slot convention: any `auth.json` entry shaped `<provider>-<n>[...]`
  * (e.g. `opencode-2`, `opencode-2-work`) becomes a first-class alias provider
- * with the base provider's model catalog, so the `agent_end` → timer →
- * `cycleModel` loop can fail over when quota/rate-limit failures are
- * per-account. Non-numeric suffixes (e.g. `opencode-personal`) are NOT
- * recognized.
+ * with the base provider's model catalog, so the automatic fallback can
+ * fail over when quota/rate-limit failures are per-account. Non-numeric
+ * suffixes (e.g. `opencode-personal`) are NOT recognized.
  */
 
 import { readFileSync, renameSync, writeFileSync } from "node:fs";

@@ -57,7 +57,7 @@ describe("indexOfScoped", () => {
 });
 
 describe("pi version floor", () => {
-  it("README declares the v0.83.0 floor", () => {
-    expect(readFileSync("README.md", "utf-8")).toContain("v0.83.0");
+  it("README declares the v0.87.0 floor", () => {
+    expect(readFileSync("README.md", "utf-8")).toContain("v0.87.0");
   });
 });
