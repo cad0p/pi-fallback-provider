@@ -18,4 +18,8 @@ describe("no-message-injection regression", () => {
       expect(readFileSync(file, "utf-8")).not.toContain("/cycle-model");
     }
   });
+
+  it("does not re-register the cycle-model command", () => {
+    expect(readFileSync("index.ts", "utf-8")).not.toContain('registerCommand("cycle-model"');
+  });
 });
