@@ -35,6 +35,12 @@ describe("boundary wiring regression", () => {
     expect(source).toContain('pi.on("turn_end"');
   });
 
+  it("delegates the registered handlers to the boundary logic", () => {
+    const source = readFileSync("index.ts", "utf-8");
+    expect(source).toContain("return onBoundary(event, ctx)");
+    expect(source).toContain("await onTurnEnd(event, ctx)");
+  });
+
   it("registers the agent_settled banner backstop", () => {
     expect(readFileSync("index.ts", "utf-8")).toContain('pi.on("agent_settled"');
   });
