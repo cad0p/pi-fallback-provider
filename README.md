@@ -26,8 +26,8 @@ agent_end fires with stopReason === "error"
 
 ## Install
 
-Requires pi **>= v0.83.0** (first release exposing the live `ctx.scopedModels`
-the fallback order walks).
+Requires pi **>= v0.87.0** (settlement boundaries and model-context edits
+both shipped in 0.87.0; the fallback triggers at the settle boundary).
 
 Install the latest released version:
 
