@@ -229,6 +229,18 @@ describe("candidateOrder / nextCandidateLabel", () => {
     const none = makeContext({ scopedModels: scoped(["a/m1", "b/m2"]), available: ["a/m1"] });
     expect(nextCandidateLabel(none, 0)).toBeUndefined();
   });
+
+  it("wraps a negative cursor from the end of the scope", () => {
+    const ctx = makeContext({
+      scopedModels: scoped(["a/m1", "b/m2", "c/m3"]),
+      available: ["a/m1", "b/m2", "c/m3"],
+    });
+    expect(candidateOrder(ctx, -1)).toEqual([
+      { provider: "c", id: "m3" },
+      { provider: "b", id: "m2" },
+    ]);
+    expect(nextCandidateLabel(ctx, -1)).toBe("c/m3");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -400,6 +412,25 @@ describe("createBoundaryHandler — continuation without a draft", () => {
     expect(deps.setModel).toHaveBeenCalledTimes(1);
   });
 
+  it("skips the draft when the last visible entry is a non-empty toolResult", async () => {
+    const deps = makeDeps();
+    const ctx = readyContext();
+    const entries: BoundaryDraftLike[] = [];
+    const event = makeEvent({
+      entries,
+      context: {
+        contextEntries: [projected("t1", "toolResult"), omitted("e1")],
+        canContinue: true,
+      },
+    });
+
+    const result = await createBoundaryHandler(deps)(event, ctx);
+
+    expect(result?.entries).toBe(entries);
+    expect(result?.continue).toBe(true);
+    expect(deps.setModel).toHaveBeenCalledWith({ provider: "b", id: "m2" });
+  });
+
   it("skips the draft when queued messages make an errored tail continuable", async () => {
     const deps = makeDeps();
     const ctx = readyContext();
@@ -452,6 +483,24 @@ describe("createBoundaryHandler — bail-outs", () => {
 
     await expect(createBoundaryHandler(deps)(event, ctx)).resolves.toBeUndefined();
     expect(ctx.ui.notify).toHaveBeenCalledWith(NO_CANDIDATES_MESSAGE, "warning");
+    expect(deps.setModel).not.toHaveBeenCalled();
+    expect(ctx.ui.setStatus).toHaveBeenCalledWith(STATUS_KEY, undefined);
+  });
+
+  it("warns when the scope is non-empty but no scoped model is available", async () => {
+    const deps = makeDeps();
+    const ctx = makeContext({
+      branch: [branchMessage("e1", "error")],
+      scopedModels: scoped(["a/m1", "b/m2"]),
+      available: [],
+    });
+    const event = makeEvent({
+      context: { contextEntries: [tailError("e1")], canContinue: false },
+    });
+
+    await expect(createBoundaryHandler(deps)(event, ctx)).resolves.toBeUndefined();
+    expect(ctx.ui.notify).toHaveBeenCalledWith(NO_CANDIDATES_MESSAGE, "warning");
+    expect(ctx.ui.notify).not.toHaveBeenCalledWith(ALL_CANDIDATES_FAILED_MESSAGE, "warning");
     expect(deps.setModel).not.toHaveBeenCalled();
     expect(ctx.ui.setStatus).toHaveBeenCalledWith(STATUS_KEY, undefined);
   });
@@ -580,5 +629,34 @@ describe("createBoundaryHandler — candidate failure handling", () => {
     });
 
     await expect(createBoundaryHandler(deps)(event, ctx)).resolves.toBeUndefined();
+  });
+});
+
+describe("createBoundaryHandler — repeated invocations", () => {
+  it("advances the cursor on each switch with no budget stop", async () => {
+    let cursor = 0;
+    const setCursor = vi.fn((next: number) => {
+      cursor = next;
+    });
+    const deps = makeDeps({ getCursor: () => cursor, setCursor });
+    const ctx = makeContext({
+      branch: [branchMessage("e1", "error")],
+      scopedModels: scoped(["a/m1", "b/m2", "c/m3"]),
+      available: ["a/m1", "b/m2", "c/m3"],
+    });
+    const handler = createBoundaryHandler(deps);
+    const event = makeEvent({
+      context: { contextEntries: [tailError("e1")], canContinue: false },
+    });
+
+    const first = await handler(event, ctx);
+    const second = await handler(event, ctx);
+
+    expect(first?.continue).toBe(true);
+    expect(second?.continue).toBe(true);
+    expect(setCursor).toHaveBeenNthCalledWith(1, 2);
+    expect(setCursor).toHaveBeenNthCalledWith(2, 0);
+    expect(deps.setModel).toHaveBeenNthCalledWith(1, { provider: "b", id: "m2" });
+    expect(deps.setModel).toHaveBeenNthCalledWith(2, { provider: "c", id: "m3" });
   });
 });
