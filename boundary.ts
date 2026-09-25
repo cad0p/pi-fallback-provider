@@ -26,7 +26,6 @@ export const NO_CANDIDATES_MESSAGE = "No fallback models available.";
 /** Structural view of a boundary draft; only `type` is interpreted here. */
 export interface BoundaryDraftLike {
   type: string;
-  [key: string]: unknown;
 }
 
 /** Omission draft: drops the target entry from future model context. */
@@ -72,7 +71,7 @@ export interface BoundaryContextLike {
   };
   hasUI: boolean;
   ui: {
-    notify(message: string, level: string): void;
+    notify(message: string, level: "info" | "warning" | "error"): void;
     setStatus(key: string, text: string | undefined): void;
   };
 }

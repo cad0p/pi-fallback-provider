@@ -20,7 +20,12 @@
  *   - xilnick/pi-fallback-provider (caching, cooldown)
  */
 
-import type { ExtensionAPI, ExtensionContext, ProviderConfig } from "@earendil-works/pi-coding-agent";
+import type {
+  AgentBeforeSettleEventResult,
+  ExtensionAPI,
+  ExtensionContext,
+  ProviderConfig,
+} from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 import {
@@ -107,7 +112,8 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
 
   // Main hook: pi's retries, compaction, and queued continuations are done.
   pi.on("agent_before_settle", async (event, ctx) => {
-    return onBoundary(event, ctx);
+    // Bridge back to pi's result type from the framework-free boundary types.
+    return onBoundary(event, ctx) as AgentBeforeSettleEventResult | undefined;
   });
 
   // Pre-announce the likely next model while pi retries; clear the banner
