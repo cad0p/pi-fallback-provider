@@ -54,9 +54,9 @@ const DEBUG =
   process.env.PI_FALLBACK_DEBUG === "1";
 
 const log = {
-  debug: (...args: unknown[]) => DEBUG && console.log("[pi-fallback]", ...args),
-  warn: (...args: unknown[]) => console.warn("[pi-fallback]", ...args),
-  error: (...args: unknown[]) => console.error("[pi-fallback]", ...args),
+  debug: (...args: unknown[]) => DEBUG && console.log("[pi-fallback-provider]", ...args),
+  warn: (...args: unknown[]) => console.warn("[pi-fallback-provider]", ...args),
+  error: (...args: unknown[]) => console.error("[pi-fallback-provider]", ...args),
 };
 
 // ---------------------------------------------------------------------------
