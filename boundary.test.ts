@@ -183,6 +183,10 @@ describe("isLastModelVisibleErrorEntry", () => {
     expect(isLastModelVisibleErrorEntry([projected("e1", "user")], "e1")).toBe(false);
   });
 
+  it("is false when an earlier errored entry is the target and a later one is the tail", () => {
+    expect(isLastModelVisibleErrorEntry([tailError("e1"), tailError("e2")], "e1")).toBe(false);
+  });
+
   it("is false when the target itself is omitted and an earlier entry is the visible tail", () => {
     expect(isLastModelVisibleErrorEntry([projected("u1", "user"), omitted("e1")], "e1")).toBe(
       false,
