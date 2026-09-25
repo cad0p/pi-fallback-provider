@@ -56,7 +56,7 @@ pi install git:github.com/cad0p/pi-fallback-provider@main # or feature branch
 
 ## Configuration
 
-No configuration needed — it cycles through all models you have authenticated in pi.
+No extra configuration — it cycles through the models in your pi scope (`enabledModels` / `--models`) that you have authenticated in pi.
 
 Set `PI_FALLBACK_DEBUG=true` for verbose logging:
 
