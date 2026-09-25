@@ -35,10 +35,20 @@ describe("boundary wiring regression", () => {
     expect(source).toContain('pi.on("turn_end"');
   });
 
-  it("delegates the registered handlers to the boundary logic", () => {
+  it("delegates each registered handler to its own boundary logic", () => {
     const source = readFileSync("index.ts", "utf-8");
-    expect(source).toContain("return (await onBoundary(event, ctx))");
-    expect(source).toContain("await onTurnEnd(event, ctx)");
+    const boundaryBody = source.slice(
+      source.indexOf('pi.on("agent_before_settle"'),
+      source.indexOf('pi.on("turn_end"'),
+    );
+    expect(boundaryBody).toContain("return (await onBoundary(event, ctx))");
+    expect(boundaryBody).not.toContain("onTurnEnd(event, ctx)");
+    const turnEndBody = source.slice(
+      source.indexOf('pi.on("turn_end"'),
+      source.indexOf('pi.on("agent_settled"'),
+    );
+    expect(turnEndBody).toContain("await onTurnEnd(event, ctx)");
+    expect(turnEndBody).not.toContain("onBoundary(event, ctx)");
   });
 
   it("registers the agent_settled banner backstop that clears the status", () => {
