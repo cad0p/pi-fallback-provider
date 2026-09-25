@@ -155,6 +155,14 @@ describe("findLastErroredAssistantEntryId", () => {
     ];
     expect(findLastErroredAssistantEntryId(branch)).toBeUndefined();
   });
+
+  it("ignores a non-assistant message with an error stop reason and keeps an earlier real one", () => {
+    const branch: BranchEntryLike[] = [
+      branchMessage("e1", "error"),
+      branchMessage("u1", "error", "user"),
+    ];
+    expect(findLastErroredAssistantEntryId(branch)).toBe("e1");
+  });
 });
 
 describe("isLastModelVisibleErrorEntry", () => {
@@ -181,6 +189,10 @@ describe("isLastModelVisibleErrorEntry", () => {
       isLastModelVisibleErrorEntry([projected("e1", "assistant", "stop")], "e1"),
     ).toBe(false);
     expect(isLastModelVisibleErrorEntry([projected("e1", "user")], "e1")).toBe(false);
+  });
+
+  it("is false when the last visible message is not an assistant despite an error stop reason", () => {
+    expect(isLastModelVisibleErrorEntry([projected("e1", "user", "error")], "e1")).toBe(false);
   });
 
   it("is false when an earlier errored entry is the target and a later one is the tail", () => {
