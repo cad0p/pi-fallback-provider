@@ -219,6 +219,7 @@ export function createBoundaryHandler(deps: BoundaryDeps): (
 ) => Promise<BoundaryResult | undefined> {
   return async (event, ctx) => {
     if (event.outcome !== "error") return undefined;
+    deps.debug("agent_before_settle error");
 
     const targetId = findLastErroredAssistantEntryId(ctx.sessionManager.getBranch());
 
@@ -226,6 +227,7 @@ export function createBoundaryHandler(deps: BoundaryDeps): (
     if (targetId && isLastModelVisibleErrorEntry(event.context.contextEntries, targetId)) {
       if (!event.context.canContinue) {
         draft = { type: "context_edit", targetId, replacement: null };
+        deps.debug(`omitting failed attempt ${targetId} from model context`);
       } else {
         deps.debug(`errored tail ${targetId} with canContinue — no draft needed`);
       }
@@ -245,6 +247,7 @@ export function createBoundaryHandler(deps: BoundaryDeps): (
       return undefined;
     }
 
+    const previous = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "unknown";
     for (const candidate of order) {
       const key = `${candidate.provider}/${candidate.id}`;
       const model = ctx.modelRegistry.find(candidate.provider, candidate.id);
@@ -268,7 +271,7 @@ export function createBoundaryHandler(deps: BoundaryDeps): (
       const scoped = ctx.scopedModels ?? [];
       const idx = indexOfScoped(scoped, candidate.provider, candidate.id);
       if (idx >= 0) deps.setCursor((idx + 1) % scoped.length);
-      deps.debug(`switched model to ${key}`);
+      deps.debug(`switched model ${previous} → ${key}`);
       clearStatus(ctx, deps.debug);
       return {
         entries: draft ? [...event.entries, draft] : event.entries,
