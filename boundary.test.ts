@@ -296,6 +296,18 @@ describe("createPreAnnounceHandler", () => {
     const handler = createPreAnnounceHandler({ getCursor: () => 0, debug: vi.fn() });
     await expect(handler({ outcome: "error" }, ctx)).resolves.toBeUndefined();
   });
+
+  it("does not reject when the UI availability getter throws", async () => {
+    const ctx = readyContext();
+    Object.defineProperty(ctx, "hasUI", {
+      get() {
+        throw new Error("ctx is stale");
+      },
+    });
+    const handler = createPreAnnounceHandler({ getCursor: () => 0, debug: vi.fn() });
+    await expect(handler({ outcome: "error" }, ctx)).resolves.toBeUndefined();
+    expect(ctx.ui.setStatus).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -590,6 +602,26 @@ describe("createBoundaryHandler — candidate failure handling", () => {
     const ctx = readyContext();
     ctx.ui.setStatus = vi.fn(() => {
       throw new Error("no ui");
+    });
+    const event = makeEvent({
+      context: { contextEntries: [tailError("e1")], canContinue: false },
+    });
+
+    const result = await createBoundaryHandler(deps)(event, ctx);
+
+    expect(result).toEqual({
+      entries: [{ type: "context_edit", targetId: "e1", replacement: null }],
+      continue: true,
+    });
+  });
+
+  it("returns the draft and continuation when the UI availability getter throws after the switch", async () => {
+    const deps = makeDeps();
+    const ctx = readyContext();
+    Object.defineProperty(ctx, "hasUI", {
+      get() {
+        throw new Error("ctx is stale");
+      },
     });
     const event = makeEvent({
       context: { contextEntries: [tailError("e1")], canContinue: false },

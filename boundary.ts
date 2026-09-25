@@ -164,17 +164,17 @@ export function clearStatus(
   ctx: BoundaryContextLike,
   debug: (...args: unknown[]) => void,
 ): void {
-  if (!ctx.hasUI) return;
   try {
+    if (!ctx.hasUI) return;
     ctx.ui.setStatus(STATUS_KEY, undefined);
   } catch (err) {
-    debug(`setStatus failed: ${err}`);
+    debug(`status update failed: ${err}`);
   }
 }
 
 function warn(ctx: BoundaryContextLike, debug: (...args: unknown[]) => void, message: string): void {
-  if (!ctx.hasUI) return;
   try {
+    if (!ctx.hasUI) return;
     ctx.ui.notify(message, "warning");
   } catch (err) {
     debug(`notify failed: ${err}`);
@@ -190,8 +190,8 @@ export function createPreAnnounceHandler(deps: Pick<BoundaryDeps, "getCursor" | 
   ctx: BoundaryContextLike,
 ) => Promise<void> {
   return async (event, ctx) => {
-    if (!ctx.hasUI) return;
     try {
+      if (!ctx.hasUI) return;
       if (event.outcome === "error") {
         const next = nextCandidateLabel(ctx, deps.getCursor());
         ctx.ui.setStatus(
@@ -202,7 +202,7 @@ export function createPreAnnounceHandler(deps: Pick<BoundaryDeps, "getCursor" | 
         ctx.ui.setStatus(STATUS_KEY, undefined);
       }
     } catch (err) {
-      deps.debug(`setStatus failed: ${err}`);
+      deps.debug(`status update failed: ${err}`);
     }
   };
 }
