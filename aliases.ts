@@ -267,7 +267,7 @@ export function readModelsJsonSection(
     const parsed = JSON.parse(raw) as { providers?: Record<string, ModelsJsonProviderSection> };
     return parsed?.providers?.[providerId];
   } catch (err) {
-    warn(`[pi-fallback] Could not parse models.json: ${err}`);
+    warn(`Could not parse models.json: ${err}`);
     return undefined;
   }
 }
@@ -339,20 +339,20 @@ export function readAliasCache(
   try {
     const parsed = JSON.parse(raw) as Partial<AliasCacheFile>;
     if (parsed?.version !== ALIAS_CACHE_VERSION || parsed.aliases === null || typeof parsed.aliases !== "object") {
-      warn(`[pi-fallback] Ignoring alias model cache (unsupported version or shape)`);
+      warn(`Ignoring alias model cache (unsupported version or shape)`);
       return {};
     }
     const out: Record<string, AliasCacheEntry> = {};
     for (const [aliasId, entry] of Object.entries(parsed.aliases)) {
       if (!isCacheEntry(entry)) {
-        warn(`[pi-fallback] Ignoring malformed cache entry for alias "${aliasId}"`);
+        warn(`Ignoring malformed cache entry for alias "${aliasId}"`);
         continue;
       }
       out[aliasId] = { base: entry.base, account: entry.account, models: entry.models.map(sanitizeModel) };
     }
     return out;
   } catch (err) {
-    warn(`[pi-fallback] Could not parse alias model cache: ${err}`);
+    warn(`Could not parse alias model cache: ${err}`);
     return {};
   }
 }
@@ -428,7 +428,7 @@ export function registerCachedAliases(deps: Phase1Deps): string[] {
   try {
     cache = deps.readCache();
   } catch (err) {
-    warn(`[pi-fallback] Could not read alias model cache: ${err}`);
+    warn(`Could not read alias model cache: ${err}`);
     return [];
   }
   const ids = Object.keys(cache);
@@ -440,7 +440,7 @@ export function registerCachedAliases(deps: Phase1Deps): string[] {
       degraded = false;
     }
     (degraded ? warn : debug)(
-      `[pi-fallback] No cached alias models; aliases will register on session_start`,
+      `No cached alias models; aliases will register on session_start`,
     );
     return [];
   }
@@ -448,7 +448,7 @@ export function registerCachedAliases(deps: Phase1Deps): string[] {
   for (const [aliasId, entry] of Object.entries(cache)) {
     const parsed = parseAliasId(aliasId);
     if (!parsed) {
-      warn(`[pi-fallback] Skipping cached alias with unparseable id "${aliasId}"`);
+      warn(`Skipping cached alias with unparseable id "${aliasId}"`);
       continue;
     }
     const base = entry?.base ?? parsed.base;
@@ -462,7 +462,7 @@ export function registerCachedAliases(deps: Phase1Deps): string[] {
       deps.register(aliasId, config);
       registered.push(aliasId);
     } catch (err) {
-      warn(`[pi-fallback] Failed to register cached alias "${aliasId}": ${err}`);
+      warn(`Failed to register cached alias "${aliasId}": ${err}`);
     }
   }
   return registered;
@@ -507,7 +507,7 @@ export function syncAliases(deps: SyncAliasesDeps): SyncAliasesResult {
   try {
     keys = deps.readAuthKeys();
   } catch (err) {
-    warn(`[pi-fallback] Could not read auth.json, aborting alias sync: ${err}`);
+    warn(`Could not read auth.json, aborting alias sync: ${err}`);
     return { registered: [], skipped: [], aborted: true };
   }
   const registered: string[] = [];
@@ -518,12 +518,12 @@ export function syncAliases(deps: SyncAliasesDeps): SyncAliasesResult {
     try {
       baseModels = deps.getBaseModels(base);
     } catch (err) {
-      warn(`[pi-fallback] Could not list models for base provider "${base}": ${err}`);
+      warn(`Could not list models for base provider "${base}": ${err}`);
       skipped.push(...aliasIds);
       continue;
     }
     if (!baseModels || baseModels.length === 0) {
-      warn(`[pi-fallback] Unknown base provider "${base}" — skipping alias(es) ${aliasIds.join(", ")}`);
+      warn(`Unknown base provider "${base}" — skipping alias(es) ${aliasIds.join(", ")}`);
       skipped.push(...aliasIds);
       continue;
     }
@@ -539,7 +539,7 @@ export function syncAliases(deps: SyncAliasesDeps): SyncAliasesResult {
         registered.push(aliasId);
         cache[aliasId] = { base, account, models: config.models ?? [] };
       } catch (err) {
-        warn(`[pi-fallback] Failed to sync alias "${aliasId}": ${err}`);
+        warn(`Failed to sync alias "${aliasId}": ${err}`);
         skipped.push(aliasId);
       }
     }
@@ -547,9 +547,9 @@ export function syncAliases(deps: SyncAliasesDeps): SyncAliasesResult {
   try {
     deps.writeCache(cache);
   } catch (err) {
-    warn(`[pi-fallback] Could not write alias model cache: ${err}`);
+    warn(`Could not write alias model cache: ${err}`);
   }
-  debug(`[pi-fallback] Alias sync: ${registered.length} registered, ${skipped.length} skipped`);
+  debug(`Alias sync: ${registered.length} registered, ${skipped.length} skipped`);
   return { registered, skipped, aborted: false };
 }
 

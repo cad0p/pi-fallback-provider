@@ -76,3 +76,30 @@ describe("boundary wiring regression", () => {
     expect(clears.length).toBeGreaterThanOrEqual(3);
   });
 });
+
+/**
+ * `index.ts` owns the log prefix and `aliases.ts` messages carry none, so the
+ * injected logger renders each line with exactly one extension-name prefix
+ * (issue #13). `index.ts` cannot be imported under vitest, so the invariant
+ * is pinned at the source level.
+ */
+describe("log prefix regression", () => {
+  it("uses the full extension name as the logger prefix in index.ts", () => {
+    const source = readFileSync("index.ts", "utf-8");
+    expect(source).toContain('console.log("[pi-fallback-provider]"');
+    expect(source).toContain('console.warn("[pi-fallback-provider]"');
+    expect(source).toContain('console.error("[pi-fallback-provider]"');
+    expect(source).not.toContain("[pi-fallback]");
+  });
+
+  it("leaves every aliases.ts message free of a bracket prefix", () => {
+    const source = readFileSync("aliases.ts", "utf-8");
+    expect(source).not.toMatch(/\[pi-fallback/i);
+  });
+
+  it("never doubles the prefix across the logger and its messages", () => {
+    const sources =
+      readFileSync("index.ts", "utf-8") + readFileSync("aliases.ts", "utf-8");
+    expect(sources).not.toMatch(/\[pi-fallback(?:-provider)?\]\s*\[pi-fallback/i);
+  });
+});
