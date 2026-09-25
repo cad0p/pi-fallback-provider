@@ -87,11 +87,12 @@ describe("log prefix regression", () => {
   it("uses the full extension name as the logger prefix in index.ts", () => {
     const source = readFileSync("index.ts", "utf-8");
     expect(source).toContain("[pi-fallback-provider]");
+    expect(source).not.toContain("[pi-fallback]");
   });
 
   it("leaves every aliases.ts message free of a bracket prefix", () => {
     const source = readFileSync("aliases.ts", "utf-8");
-    expect(source).not.toContain("[pi-fallback");
+    expect(source).not.toMatch(/\[pi-fallback/i);
   });
 
   it("never doubles the prefix across the logger and its messages", () => {
