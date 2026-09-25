@@ -445,6 +445,25 @@ describe("createBoundaryHandler — continuation without a draft", () => {
     expect(result?.entries).toBe(entries);
     expect(result?.continue).toBe(true);
     expect(deps.setModel).toHaveBeenCalledTimes(1);
+    expect(deps.debug).toHaveBeenCalledWith(
+      "pi already omitted the failed attempt — no draft needed",
+    );
+  });
+
+  it("logs the no-errored-attempt case when the branch holds no failed entry", async () => {
+    const deps = makeDeps();
+    const ctx = readyContext([branchMessage("ok", "stop")]);
+    const event = makeEvent({
+      context: { contextEntries: [], canContinue: true },
+    });
+
+    const result = await createBoundaryHandler(deps)(event, ctx);
+
+    expect(result?.continue).toBe(true);
+    expect(deps.debug).toHaveBeenCalledWith("no errored attempt to omit — no draft needed");
+    expect(deps.debug).not.toHaveBeenCalledWith(
+      "pi already omitted the failed attempt — no draft needed",
+    );
   });
 
   it("skips the draft when the last visible entry is a non-empty toolResult", async () => {

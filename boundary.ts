@@ -242,7 +242,11 @@ export function createBoundaryHandler(deps: BoundaryDeps): (
           deps.debug(`errored tail ${targetId} with canContinue — no draft needed`);
         }
       } else if (event.context.canContinue) {
-        deps.debug("pi already omitted the failed attempt — no draft needed");
+        deps.debug(
+          targetId
+            ? "pi already omitted the failed attempt — no draft needed"
+            : "no errored attempt to omit — no draft needed",
+        );
       } else {
         deps.debug("no model-visible errored tail to omit — bailing out");
         clearStatus(ctx, deps.debug);
