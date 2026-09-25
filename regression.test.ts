@@ -86,7 +86,9 @@ describe("boundary wiring regression", () => {
 describe("log prefix regression", () => {
   it("uses the full extension name as the logger prefix in index.ts", () => {
     const source = readFileSync("index.ts", "utf-8");
-    expect(source).toContain("[pi-fallback-provider]");
+    expect(source).toContain('console.log("[pi-fallback-provider]"');
+    expect(source).toContain('console.warn("[pi-fallback-provider]"');
+    expect(source).toContain('console.error("[pi-fallback-provider]"');
     expect(source).not.toContain("[pi-fallback]");
   });
 
@@ -98,6 +100,6 @@ describe("log prefix regression", () => {
   it("never doubles the prefix across the logger and its messages", () => {
     const sources =
       readFileSync("index.ts", "utf-8") + readFileSync("aliases.ts", "utf-8");
-    expect(sources).not.toMatch(/\[pi-fallback\]\s*\[pi-fallback/);
+    expect(sources).not.toMatch(/\[pi-fallback(?:-provider)?\]\s*\[pi-fallback/i);
   });
 });
