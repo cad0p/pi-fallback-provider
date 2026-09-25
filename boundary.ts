@@ -235,12 +235,8 @@ export function createBoundaryHandler(deps: BoundaryDeps): (
       const targetId = findLastErroredAssistantEntryId(ctx.sessionManager.getBranch());
 
       if (targetId && isLastModelVisibleErrorEntry(event.context.contextEntries, targetId)) {
-        if (!event.context.canContinue) {
-          draft = { type: "context_edit", targetId, replacement: null };
-          deps.debug(`omitting failed attempt ${targetId} from model context`);
-        } else {
-          deps.debug(`errored tail ${targetId} with canContinue — no draft needed`);
-        }
+        draft = { type: "context_edit", targetId, replacement: null };
+        deps.debug(`omitting failed attempt ${targetId} from model context`);
       } else if (event.context.canContinue) {
         deps.debug(
           targetId

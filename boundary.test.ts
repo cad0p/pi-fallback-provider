@@ -372,6 +372,23 @@ describe("createBoundaryHandler — omission draft", () => {
     expect(deps.setModel).toHaveBeenCalledWith({ provider: "b", id: "m2" });
   });
 
+  it("omits the errored tail even when queued messages already allow continuation", async () => {
+    const deps = makeDeps();
+    const ctx = readyContext();
+    const event = makeEvent({
+      context: { contextEntries: [tailError("e1")], canContinue: true },
+    });
+
+    const result = await createBoundaryHandler(deps)(event, ctx);
+
+    expect(result).toEqual({
+      entries: [{ type: "context_edit", targetId: "e1", replacement: null }],
+      continue: true,
+    });
+    expect(deps.setModel).toHaveBeenCalledTimes(1);
+    expect(deps.debug).toHaveBeenCalledWith("omitting failed attempt e1 from model context");
+  });
+
   it("preserves drafts returned by earlier handlers", async () => {
     const deps = makeDeps();
     const ctx = readyContext();
@@ -485,18 +502,6 @@ describe("createBoundaryHandler — continuation without a draft", () => {
     expect(deps.setModel).toHaveBeenCalledWith({ provider: "b", id: "m2" });
   });
 
-  it("skips the draft when queued messages make an errored tail continuable", async () => {
-    const deps = makeDeps();
-    const ctx = readyContext();
-    const event = makeEvent({
-      context: { contextEntries: [tailError("e1")], canContinue: true },
-    });
-
-    const result = await createBoundaryHandler(deps)(event, ctx);
-
-    expect(result).toEqual({ entries: [], continue: true });
-    expect(deps.setModel).toHaveBeenCalledTimes(1);
-  });
 });
 
 describe("createBoundaryHandler — bail-outs", () => {
