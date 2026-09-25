@@ -535,6 +535,19 @@ describe("createBoundaryHandler — bail-outs", () => {
     expect(ctx.ui.setStatus).toHaveBeenCalledWith(STATUS_KEY, undefined);
   });
 
+  it("warns no one when no candidate exists and there is no UI", async () => {
+    const deps = makeDeps();
+    const ctx = makeContext({ branch: [branchMessage("e1", "error")], hasUI: false });
+    const event = makeEvent({
+      context: { contextEntries: [tailError("e1")], canContinue: false },
+    });
+
+    await expect(createBoundaryHandler(deps)(event, ctx)).resolves.toBeUndefined();
+    expect(deps.setModel).not.toHaveBeenCalled();
+    expect(ctx.ui.notify).not.toHaveBeenCalled();
+    expect(ctx.ui.setStatus).not.toHaveBeenCalled();
+  });
+
   it("warns when the scope is non-empty but no scoped model is available", async () => {
     const deps = makeDeps();
     const ctx = makeContext({
