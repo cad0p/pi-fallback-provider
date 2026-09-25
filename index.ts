@@ -33,7 +33,7 @@ import {
 } from "./aliases";
 import type { CloneSourceModel, SyncAliasesResult } from "./aliases";
 import {
-  STATUS_KEY,
+  clearStatus,
   createBoundaryHandler,
   createPreAnnounceHandler,
 } from "./boundary";
@@ -105,15 +105,6 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
   const onBoundary = createBoundaryHandler(boundaryDeps);
   const onTurnEnd = createPreAnnounceHandler({ getCursor: () => fallbackCursor, debug });
 
-  function clearStatus(ctx: ExtensionContext): void {
-    if (!ctx.hasUI) return;
-    try {
-      ctx.ui.setStatus(STATUS_KEY, undefined);
-    } catch (err) {
-      log.debug(`setStatus failed: ${err}`);
-    }
-  }
-
   // Main hook: pi's retries, compaction, and queued continuations are done.
   pi.on("agent_before_settle", async (event, ctx) => {
     return onBoundary(event, ctx);
@@ -127,7 +118,7 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
 
   // A fresh user prompt means the episode is over — drop the banner.
   pi.on("before_agent_start", async (_event, ctx) => {
-    clearStatus(ctx);
+    clearStatus(ctx, debug);
   });
 
   // Phase 2 (multi-account): live-clone base catalogs into alias
@@ -138,7 +129,7 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
 
   // Reset the pre-announce banner on session switch.
   pi.on("session_shutdown", async (_event, ctx) => {
-    clearStatus(ctx);
+    clearStatus(ctx, debug);
   });
 
   // Manual alias re-sync (same code path as session_start Phase 2).

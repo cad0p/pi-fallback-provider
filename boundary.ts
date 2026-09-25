@@ -160,7 +160,7 @@ export function nextCandidateLabel(
   return first ? `${first.provider}/${first.id}` : undefined;
 }
 
-function clearStatus(
+export function clearStatus(
   ctx: BoundaryContextLike,
   debug: (...args: unknown[]) => void,
 ): void {
