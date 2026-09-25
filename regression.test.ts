@@ -37,7 +37,7 @@ describe("boundary wiring regression", () => {
 
   it("delegates the registered handlers to the boundary logic", () => {
     const source = readFileSync("index.ts", "utf-8");
-    expect(source).toContain("return onBoundary(event, ctx)");
+    expect(source).toContain("return (await onBoundary(event, ctx))");
     expect(source).toContain("await onTurnEnd(event, ctx)");
   });
 

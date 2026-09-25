@@ -113,7 +113,7 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
   // Main hook: pi's retries, compaction, and queued continuations are done.
   pi.on("agent_before_settle", async (event, ctx) => {
     // Bridge back to pi's result type from the framework-free boundary types.
-    return onBoundary(event, ctx) as AgentBeforeSettleEventResult | undefined;
+    return (await onBoundary(event, ctx)) as AgentBeforeSettleEventResult | undefined;
   });
 
   // Pre-announce the likely next model while pi retries; clear the banner
