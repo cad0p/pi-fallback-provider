@@ -12,6 +12,10 @@ All notable changes to this project will be documented in this file.
 
 - Fallback via settle-boundary context edits (closes #14)
 
+### 🐛 Bug Fixes
+
+- Deduplicate and rename the extension log prefix (closes #13)
+
 
 ## [0.2.0] - 2026-09-07
 
