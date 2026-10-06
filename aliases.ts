@@ -12,7 +12,8 @@
  * suffixes (e.g. `opencode-personal`) are NOT recognized.
  */
 
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -358,7 +359,7 @@ export function readAliasCache(
 }
 
 /**
- * Write the alias model cache atomically (tmp + rename). Models are
+ * Write the alias model cache atomically (unique tmp + rename). Models are
  * sanitized through the known-field whitelist, so even a caller-passed
  * `apiKey` (or any other secret/extra) never reaches disk.
  */
@@ -381,9 +382,25 @@ export function writeAliasCache(
     aliases: sanitized,
   };
   const dest = cachePath(agentDir);
-  const tmp = `${dest}.tmp`;
-  writeFileSync(tmp, JSON.stringify(file, null, 2), "utf-8");
-  renameSync(tmp, dest);
+  // Unique per writer: every session that loads the extension syncs aliases on
+  // session_start (including subagent sessions), so a shared `${dest}.tmp`
+  // would let one writer rename the file another is still writing — an ENOENT
+  // at best, a partially-written cache at worst.
+  const tmp = `${dest}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify(file, null, 2), "utf-8");
+    renameSync(tmp, dest);
+  } catch (err) {
+    // Best-effort cleanup so a failed write cannot accumulate unique tmp files;
+    // an already-renamed (or never-created) tmp is ignored, and the original
+    // error is rethrown so syncAliases can log its warning.
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // nothing to clean up
+    }
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------
