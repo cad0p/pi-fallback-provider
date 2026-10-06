@@ -22,6 +22,7 @@ import { readAliasCache, writeAliasCache } from "./aliases";
 
 const state = vi.hoisted(() => ({
   afterTmpWrite: undefined as (() => void) | undefined,
+  failNextRename: false,
 }));
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -37,6 +38,13 @@ vi.mock("node:fs", async (importOriginal) => {
         run();
       }
     }) as typeof actual.writeFileSync,
+    renameSync: ((...args: unknown[]) => {
+      if (state.failNextRename) {
+        state.failNextRename = false;
+        throw new Error("simulated rename failure");
+      }
+      return (actual.renameSync as (...a: unknown[]) => void)(...args);
+    }) as typeof actual.renameSync,
   };
 });
 
@@ -84,5 +92,16 @@ describe("writeAliasCache concurrency", () => {
     writeAliasCache(dir, { "opencode-2": entry("model-a") });
     expect(readdirSync(dir)).toEqual(["pi-fallback-alias-models.json"]);
     expect(readAliasCache(dir)["opencode-2"].models[0].id).toBe("model-a");
+  });
+
+  it("removes the tmp file when the rename fails", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-fallback-race-"));
+    state.failNextRename = true;
+
+    expect(() => writeAliasCache(dir, { "opencode-2": entry("model-a") })).toThrow(
+      "simulated rename failure",
+    );
+
+    expect(readdirSync(dir)).toEqual([]);
   });
 });

@@ -13,7 +13,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -387,8 +387,20 @@ export function writeAliasCache(
   // would let one writer rename the file another is still writing — an ENOENT
   // at best, a partially-written cache at worst.
   const tmp = `${dest}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
-  writeFileSync(tmp, JSON.stringify(file, null, 2), "utf-8");
-  renameSync(tmp, dest);
+  try {
+    writeFileSync(tmp, JSON.stringify(file, null, 2), "utf-8");
+    renameSync(tmp, dest);
+  } catch (err) {
+    // Best-effort cleanup so a failed write cannot accumulate unique tmp files;
+    // an already-renamed (or never-created) tmp is ignored, and the original
+    // error is rethrown so syncAliases can log its warning.
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // nothing to clean up
+    }
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------
