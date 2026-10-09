@@ -58,22 +58,49 @@ describe("boundary wiring regression", () => {
     );
   });
 
-  it("registers the agent_settled banner backstop that clears the status", () => {
+  it("registers the agent_settled banner backstop that resets the episode", () => {
     const source = readFileSync("index.ts", "utf-8");
     expect(source).toContain('pi.on("agent_settled"');
     const settledBody = source.slice(
       source.indexOf('pi.on("agent_settled"'),
       source.indexOf('pi.on("before_agent_start"'),
     );
-    expect(settledBody).toContain("clearStatus(ctx, debug)");
+    expect(settledBody).toContain("resetEpisodeStatus(ctx, episode, debug)");
   });
 
-  it("registers the fresh-prompt and session-shutdown banner handlers", () => {
+  it("registers the fresh-prompt and session-shutdown episode resets", () => {
     const source = readFileSync("index.ts", "utf-8");
-    expect(source).toContain('pi.on("before_agent_start"');
-    expect(source).toContain('pi.on("session_shutdown"');
-    const clears = source.match(/clearStatus\(ctx, debug\)/g) ?? [];
-    expect(clears.length).toBeGreaterThanOrEqual(3);
+    const beforeBody = source.slice(
+      source.indexOf('pi.on("before_agent_start"'),
+      source.indexOf('pi.on("session_start"'),
+    );
+    expect(beforeBody).toContain("resetEpisodeStatus(ctx, episode, debug)");
+    const shutdownBody = source.slice(
+      source.indexOf('pi.on("session_shutdown"'),
+      source.indexOf("pi.registerCommand"),
+    );
+    expect(shutdownBody).toContain("resetEpisodeStatus(ctx, episode, debug)");
+  });
+
+  it("shares one episode state between the banner and the boundary delay", () => {
+    const source = readFileSync("index.ts", "utf-8");
+    expect(source).toContain("const episode = createEpisodeState();");
+    const depsBody = source.slice(
+      source.indexOf("const boundaryDeps"),
+      source.indexOf("const onBoundary"),
+    );
+    expect(depsBody).toContain("episode,");
+    const turnEndBody = source.slice(
+      source.indexOf("const onTurnEnd"),
+      source.indexOf('pi.on("agent_before_settle"'),
+    );
+    expect(turnEndBody).toContain("episode,");
+  });
+
+  it("builds the delay policy from the environment in one place", () => {
+    const source = readFileSync("index.ts", "utf-8");
+    expect(source).toContain("delay: buildDelayPolicy(process.env),");
+    expect(source).not.toContain("parseDelayMs(");
   });
 });
 
