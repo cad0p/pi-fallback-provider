@@ -32,12 +32,13 @@ terminal error
   (the count includes pi's own internal retries). It clears on a successful or
   completed turn, a fresh prompt, a successful switch, when no candidate
   exists, and on session shutdown; all status updates are UI-gated
-- **Paced fallbacks** — the first fallback switch after a single errored turn
-  is immediate; each completed switch doubles the wait before the next one
-  (`2s → 4s → …`, capped at 60s), so a quota window is paced instead of
-  hammered at provider speed. pi 1.1.0 exposes no run signal at the settle
-  boundary, so an ESC during a wait stops the re-issue but the current wait
-  completes first (bounded by the cap). See [Configuration](#configuration)
+- **Paced fallbacks** — the first full pass over the scoped models is
+  immediate (every account is tried once back-to-back); from the second pass
+  each completed switch doubles the wait before the next one (`2s → 4s → …`,
+  capped at 60s), so a quota window is paced instead of hammered at provider
+  speed. pi 1.1.0 exposes no run signal at the settle boundary, so an ESC
+  during a wait stops the re-issue but the current wait completes first
+  (bounded by the cap). See [Configuration](#configuration)
 - **Appends nothing** — the failed attempt is omitted from future model
   context via an append-only `context_edit`; a `continue` message is never
   injected
@@ -88,7 +89,7 @@ switch (`2s, 4s, 8s, …`) up to the cap. Tune or disable it with:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `PI_FALLBACK_DELAY_MS` | `2000` | Backoff base in milliseconds; `0` disables the delay |
+| `PI_FALLBACK_DELAY_MS` | `2000` | Backoff base in milliseconds for the second and later passes; `0` disables the delay |
 | `PI_FALLBACK_MAX_DELAY_MS` | `60000` | Backoff cap in milliseconds; `0` disables the delay too |
 
 ```bash
