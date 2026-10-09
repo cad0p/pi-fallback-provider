@@ -41,12 +41,10 @@ import {
 } from "./aliases";
 import type { CloneSourceModel, SyncAliasesResult } from "./aliases";
 import {
-  DEFAULT_DELAY_MS,
-  DEFAULT_MAX_DELAY_MS,
+  buildDelayPolicy,
   createBoundaryHandler,
   createEpisodeState,
   createPreAnnounceHandler,
-  parseDelayMs,
   resetEpisodeStatus,
 } from "./boundary";
 import type { BoundaryDeps } from "./boundary";
@@ -115,10 +113,7 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
     },
     debug,
     episode,
-    delay: {
-      baseMs: parseDelayMs(process.env.PI_FALLBACK_DELAY_MS, DEFAULT_DELAY_MS),
-      maxMs: parseDelayMs(process.env.PI_FALLBACK_MAX_DELAY_MS, DEFAULT_MAX_DELAY_MS),
-    },
+    delay: buildDelayPolicy(process.env),
   };
 
   const onBoundary = createBoundaryHandler(boundaryDeps);

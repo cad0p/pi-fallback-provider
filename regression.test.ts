@@ -70,10 +70,16 @@ describe("boundary wiring regression", () => {
 
   it("registers the fresh-prompt and session-shutdown episode resets", () => {
     const source = readFileSync("index.ts", "utf-8");
-    expect(source).toContain('pi.on("before_agent_start"');
-    expect(source).toContain('pi.on("session_shutdown"');
-    const resets = source.match(/resetEpisodeStatus\(ctx, episode, debug\)/g) ?? [];
-    expect(resets.length).toBeGreaterThanOrEqual(3);
+    const beforeBody = source.slice(
+      source.indexOf('pi.on("before_agent_start"'),
+      source.indexOf('pi.on("session_start"'),
+    );
+    expect(beforeBody).toContain("resetEpisodeStatus(ctx, episode, debug)");
+    const shutdownBody = source.slice(
+      source.indexOf('pi.on("session_shutdown"'),
+      source.indexOf("pi.registerCommand"),
+    );
+    expect(shutdownBody).toContain("resetEpisodeStatus(ctx, episode, debug)");
   });
 
   it("shares one episode state between the banner and the boundary delay", () => {
@@ -91,12 +97,10 @@ describe("boundary wiring regression", () => {
     expect(turnEndBody).toContain("episode,");
   });
 
-  it("reads the delay env knobs through parseDelayMs with the pinned defaults", () => {
+  it("builds the delay policy from the environment in one place", () => {
     const source = readFileSync("index.ts", "utf-8");
-    expect(source).toContain('parseDelayMs(process.env.PI_FALLBACK_DELAY_MS, DEFAULT_DELAY_MS)');
-    expect(source).toContain(
-      'parseDelayMs(process.env.PI_FALLBACK_MAX_DELAY_MS, DEFAULT_MAX_DELAY_MS)',
-    );
+    expect(source).toContain("delay: buildDelayPolicy(process.env),");
+    expect(source).not.toContain("parseDelayMs(");
   });
 });
 

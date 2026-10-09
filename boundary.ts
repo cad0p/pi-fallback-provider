@@ -83,7 +83,12 @@ export interface BoundaryContextLike {
     find(provider: string, id: string): { provider: string; id: string } | undefined;
     getAvailable(): Array<{ provider: string; id: string }>;
   };
-  /** Run abort signal; aborts the inter-attempt delay when the user stops the run. */
+  /**
+   * Run abort signal where the host provides one. pi 1.1.0 clears the agent
+   * run (`activeRun`) before `agent_before_settle`, so this is `undefined`
+   * there and the inter-attempt wait runs to completion; pi still drops the
+   * continuation afterwards via its own boundary-abort check.
+   */
   signal?: AbortSignal;
   hasUI: boolean;
   ui: {
@@ -98,9 +103,11 @@ export interface EpisodeState {
   attempts: number;
   /** Clock time of the first error in the episode, or undefined when none. */
   firstErrorAt: number | undefined;
+  /** Fallback switches completed in this episode (drives the inter-attempt delay). */
+  switches: number;
 }
 
-/** Exponential inter-attempt backoff policy. `baseMs <= 0` disables the delay. */
+/** Exponential inter-attempt backoff policy (disable/cap rules in {@link fallbackDelayMs}). */
 export interface FallbackDelayPolicy {
   baseMs: number;
   maxMs: number;
@@ -227,7 +234,7 @@ function warn(ctx: BoundaryContextLike, debug: (...args: unknown[]) => void, mes
 
 /** Fresh episode state (no errors yet). */
 export function createEpisodeState(): EpisodeState {
-  return { attempts: 0, firstErrorAt: undefined };
+  return { attempts: 0, firstErrorAt: undefined, switches: 0 };
 }
 
 /** Record one more errored turn; the first error opens the episode clock. */
@@ -240,29 +247,39 @@ export function noteError(state: EpisodeState, now: number): void {
 export function resetEpisode(state: EpisodeState): void {
   state.attempts = 0;
   state.firstErrorAt = undefined;
+  state.switches = 0;
 }
 
 /** Milliseconds since the first error of the open episode, or 0 when none. */
 export function episodeElapsedMs(state: EpisodeState, now: number): number {
   if (state.firstErrorAt === undefined) return 0;
-  return Math.max(0, now - state.firstErrorAt);
+  const elapsed = now - state.firstErrorAt;
+  return Number.isFinite(elapsed) && elapsed > 0 ? elapsed : 0;
 }
 
 /**
- * Inter-attempt delay before the next fallback switch: none after the first
- * failure, then `min(base × 2^(attempts-2), cap)`; `baseMs <= 0` disables.
+ * Inter-attempt delay before the next fallback switch, keyed off the number of
+ * switches already completed in the episode: `0` → no delay (the first switch),
+ * `1` → base, `2` → 2×base, … capped at `maxMs`. `baseMs <= 0`, `maxMs <= 0`,
+ * or `NaN` on either disables the delay; `maxMs === Infinity` means no cap.
  */
-export function fallbackDelayMs(policy: FallbackDelayPolicy, attempts: number): number {
+export function fallbackDelayMs(policy: FallbackDelayPolicy, completedSwitches: number): number {
   if (!Number.isFinite(policy.baseMs) || policy.baseMs <= 0) return 0;
-  if (!Number.isFinite(attempts) || attempts <= 1) return 0;
-  const exponent = Math.min(Math.floor(attempts) - 2, 30);
+  const switches = Math.floor(completedSwitches);
+  if (!Number.isFinite(completedSwitches) || switches < 1) return 0;
+  const exponent = Math.min(switches - 1, 30);
   const delay = policy.baseMs * 2 ** exponent;
   const safe = Number.isSafeInteger(delay) ? delay : Number.MAX_SAFE_INTEGER;
-  const cap = Number.isFinite(policy.maxMs) && policy.maxMs > 0 ? policy.maxMs : 0;
-  return Math.min(safe, cap);
+  if (Number.isNaN(policy.maxMs) || policy.maxMs <= 0) return 0;
+  if (!Number.isFinite(policy.maxMs)) return safe; // Infinity → no cap
+  return Math.min(safe, policy.maxMs);
 }
 
-/** Parse an env delay value; undefined/empty/negative/non-numeric → fallback. */
+/**
+ * Parse an env delay value. Undefined, empty, negative, and non-numeric values
+ * fall back; anything else is coerced with `Number()` (so `1e3` and `0x10` are
+ * accepted) and floored. `"0"` is valid and disables the delay.
+ */
 export function parseDelayMs(raw: string | undefined, fallback: number): number {
   if (raw === undefined) return fallback;
   const trimmed = raw.trim();
@@ -270,6 +287,20 @@ export function parseDelayMs(raw: string | undefined, fallback: number): number 
   const value = Number(trimmed);
   if (!Number.isFinite(value) || value < 0) return fallback;
   return Math.floor(value);
+}
+
+/** Env shape for {@link buildDelayPolicy} (a `process.env` subset). */
+export interface DelayEnv {
+  PI_FALLBACK_DELAY_MS?: string | undefined;
+  PI_FALLBACK_MAX_DELAY_MS?: string | undefined;
+}
+
+/** Build the delay policy from the two env knobs (defaults 2000ms / 60000ms). */
+export function buildDelayPolicy(env: DelayEnv): FallbackDelayPolicy {
+  return {
+    baseMs: parseDelayMs(env.PI_FALLBACK_DELAY_MS, DEFAULT_DELAY_MS),
+    maxMs: parseDelayMs(env.PI_FALLBACK_MAX_DELAY_MS, DEFAULT_MAX_DELAY_MS),
+  };
 }
 
 /** Compact episode duration: `15s`, `2m3s`, `12h35m15s`, `1d3h5m`. */
@@ -291,7 +322,9 @@ export function formatDuration(ms: number): string {
  * the second consecutive failure the episode count and elapsed time lead.
  */
 export function formatPreAnnounceBanner(next: string, attempts: number, elapsedMs: number): string {
-  if (attempts <= 1) return `⚠ error — next: ${next} if retries fail`;
+  if (!Number.isFinite(attempts) || attempts <= 1) {
+    return `⚠ error — next: ${next} if retries fail`;
+  }
   return `⚠ error #${attempts} · retrying for ${formatDuration(elapsedMs)} — next: ${next}`;
 }
 
@@ -324,10 +357,9 @@ export function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> 
       finish(new DelayAbortedError());
     }
     timer = setTimeout(() => finish(), Math.min(Math.max(ms, 0), MAX_TIMEOUT_MS));
+    // A pending wait must not keep the process alive (shutdown during a delay).
+    timer.unref?.();
     signal?.addEventListener("abort", onAbort, { once: true });
-    // The signal may have aborted between the guard above and the listener
-    // registration; re-check so that race cannot wait out the full delay.
-    if (signal?.aborted) onAbort();
   });
 }
 
@@ -343,9 +375,9 @@ export function resetEpisodeStatus(
 
 /**
  * `turn_end` handler: pre-announce the likely next candidate while pi is still
- * retrying, track the consecutive-error episode (count + first-error time) that
- * feeds the boundary delay, and clear the banner once the turn settles without
- * an error.
+ * retrying, track the consecutive-error episode (banner count + first-error
+ * time) and the fallback-switch count that paces the boundary delay, and clear
+ * the banner once the turn settles without an error.
  */
 export function createPreAnnounceHandler(
   deps: Pick<BoundaryDeps, "getCursor" | "debug" | "episode"> & { now?: () => number },
@@ -441,13 +473,14 @@ export function createBoundaryHandler(deps: BoundaryDeps): (
       return undefined;
     }
 
-    // Pace repeated fallbacks: no delay after the first failure, then
-    // exponential backoff capped by the policy. Aborting the run during the
-    // wait settles without continuing.
-    const delayMs = fallbackDelayMs(deps.delay, deps.episode.attempts);
+    // Pace repeated fallbacks: the first switch is immediate, then exponential
+    // backoff capped by the policy. pi 1.1.0 has no run signal at this boundary,
+    // so the wait completes even when the user aborts; pi then drops the
+    // continuation via its own boundary-abort check (BoundaryContextLike.signal).
+    const delayMs = fallbackDelayMs(deps.delay, deps.episode.switches);
     if (delayMs > 0) {
       deps.debug(
-        `inter-attempt delay ${delayMs}ms after ${deps.episode.attempts} consecutive error(s)`,
+        `inter-attempt delay ${delayMs}ms after ${deps.episode.switches} fallback switch(es)`,
       );
       try {
         await (deps.sleep ?? sleepAbortable)(delayMs, ctx.signal);
@@ -480,6 +513,7 @@ export function createBoundaryHandler(deps: BoundaryDeps): (
 
       const idx = indexOfScoped(scoped, candidate.provider, candidate.id);
       if (idx >= 0) deps.setCursor((idx + 1) % scoped.length);
+      deps.episode.switches += 1;
       deps.debug(`switched model ${previous} → ${key}`);
       clearStatus(ctx, deps.debug);
       return {
