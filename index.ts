@@ -5,12 +5,15 @@
  * after a terminal error, it emits `agent_before_settle`. This extension then
  * omits the failed assistant attempt from future model context with a
  * `context_edit` draft, switches to the next authenticated scoped model, and
- * asks pi to continue. No user message is appended and no timer is involved,
- * so the fallback fires exactly when pi's own recovery is exhausted.
+ * asks pi to continue. No user message is appended; each fallback switch after
+ * the first waits an exponential inter-attempt delay, so a quota window is
+ * paced instead of hammered at provider speed.
  *
  * How it works:
- *   1. `turn_end` with outcome "error" → pre-announce the likely next model
- *   2. `agent_before_settle` → omit the failed attempt, switch model, continue
+ *   1. `turn_end` with outcome "error" → pre-announce the likely next model,
+ *      with the episode count and elapsed time from the second error on
+ *   2. `agent_before_settle` → omit the failed attempt, wait the inter-attempt
+ *      delay, switch model, continue
  *   3. completed/aborted turns, fresh prompts, successful switches, and
  *      session shutdown clear the pre-announce banner
  *
@@ -38,9 +41,13 @@ import {
 } from "./aliases";
 import type { CloneSourceModel, SyncAliasesResult } from "./aliases";
 import {
-  clearStatus,
+  DEFAULT_DELAY_MS,
+  DEFAULT_MAX_DELAY_MS,
   createBoundaryHandler,
+  createEpisodeState,
   createPreAnnounceHandler,
+  parseDelayMs,
+  resetEpisodeStatus,
 } from "./boundary";
 import type { BoundaryDeps } from "./boundary";
 
@@ -96,6 +103,8 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
 
   const debug = (...args: unknown[]) => log.debug(...args);
 
+  const episode = createEpisodeState();
+
   const boundaryDeps: BoundaryDeps = {
     // The handler passes the live registry object it obtained from
     // `ctx.modelRegistry.find`, so this cast keeps pi's full Model instance.
@@ -105,10 +114,19 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
       fallbackCursor = next;
     },
     debug,
+    episode,
+    delay: {
+      baseMs: parseDelayMs(process.env.PI_FALLBACK_DELAY_MS, DEFAULT_DELAY_MS),
+      maxMs: parseDelayMs(process.env.PI_FALLBACK_MAX_DELAY_MS, DEFAULT_MAX_DELAY_MS),
+    },
   };
 
   const onBoundary = createBoundaryHandler(boundaryDeps);
-  const onTurnEnd = createPreAnnounceHandler({ getCursor: () => fallbackCursor, debug });
+  const onTurnEnd = createPreAnnounceHandler({
+    getCursor: () => fallbackCursor,
+    debug,
+    episode,
+  });
 
   // Main hook: pi's retries, compaction, and queued continuations are done.
   pi.on("agent_before_settle", async (event, ctx) => {
@@ -123,14 +141,14 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
   });
 
   // Backstop: a run aborted during retry backoff emits no further turn_end,
-  // so clear the banner when the run settles.
+  // so close the episode and clear the banner when the run settles.
   pi.on("agent_settled", async (_event, ctx) => {
-    clearStatus(ctx, debug);
+    resetEpisodeStatus(ctx, episode, debug);
   });
 
-  // A fresh user prompt means the episode is over — drop the banner.
+  // A fresh user prompt means the episode is over — reset and drop the banner.
   pi.on("before_agent_start", async (_event, ctx) => {
-    clearStatus(ctx, debug);
+    resetEpisodeStatus(ctx, episode, debug);
   });
 
   // Phase 2 (multi-account): live-clone base catalogs into alias
@@ -141,7 +159,7 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
 
   // Reset the pre-announce banner on session switch.
   pi.on("session_shutdown", async (_event, ctx) => {
-    clearStatus(ctx, debug);
+    resetEpisodeStatus(ctx, episode, debug);
   });
 
   // Manual alias re-sync (same code path as session_start Phase 2).

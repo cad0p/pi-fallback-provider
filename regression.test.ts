@@ -58,22 +58,45 @@ describe("boundary wiring regression", () => {
     );
   });
 
-  it("registers the agent_settled banner backstop that clears the status", () => {
+  it("registers the agent_settled banner backstop that resets the episode", () => {
     const source = readFileSync("index.ts", "utf-8");
     expect(source).toContain('pi.on("agent_settled"');
     const settledBody = source.slice(
       source.indexOf('pi.on("agent_settled"'),
       source.indexOf('pi.on("before_agent_start"'),
     );
-    expect(settledBody).toContain("clearStatus(ctx, debug)");
+    expect(settledBody).toContain("resetEpisodeStatus(ctx, episode, debug)");
   });
 
-  it("registers the fresh-prompt and session-shutdown banner handlers", () => {
+  it("registers the fresh-prompt and session-shutdown episode resets", () => {
     const source = readFileSync("index.ts", "utf-8");
     expect(source).toContain('pi.on("before_agent_start"');
     expect(source).toContain('pi.on("session_shutdown"');
-    const clears = source.match(/clearStatus\(ctx, debug\)/g) ?? [];
-    expect(clears.length).toBeGreaterThanOrEqual(3);
+    const resets = source.match(/resetEpisodeStatus\(ctx, episode, debug\)/g) ?? [];
+    expect(resets.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("shares one episode state between the banner and the boundary delay", () => {
+    const source = readFileSync("index.ts", "utf-8");
+    expect(source).toContain("const episode = createEpisodeState();");
+    const depsBody = source.slice(
+      source.indexOf("const boundaryDeps"),
+      source.indexOf("const onBoundary"),
+    );
+    expect(depsBody).toContain("episode,");
+    const turnEndBody = source.slice(
+      source.indexOf("const onTurnEnd"),
+      source.indexOf('pi.on("agent_before_settle"'),
+    );
+    expect(turnEndBody).toContain("episode,");
+  });
+
+  it("reads the delay env knobs through parseDelayMs with the pinned defaults", () => {
+    const source = readFileSync("index.ts", "utf-8");
+    expect(source).toContain('parseDelayMs(process.env.PI_FALLBACK_DELAY_MS, DEFAULT_DELAY_MS)');
+    expect(source).toContain(
+      'parseDelayMs(process.env.PI_FALLBACK_MAX_DELAY_MS, DEFAULT_MAX_DELAY_MS)',
+    );
   });
 });
 

@@ -2,14 +2,28 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   ALL_CANDIDATES_FAILED_MESSAGE,
+  DEFAULT_DELAY_MS,
+  DEFAULT_MAX_DELAY_MS,
+  DelayAbortedError,
+  MAX_TIMEOUT_MS,
   NO_CANDIDATES_MESSAGE,
   STATUS_KEY,
   candidateOrder,
   createBoundaryHandler,
+  createEpisodeState,
   createPreAnnounceHandler,
+  episodeElapsedMs,
+  fallbackDelayMs,
   findLastErroredAssistantEntryId,
+  formatDuration,
+  formatPreAnnounceBanner,
   isLastModelVisibleErrorEntry,
   nextCandidateLabel,
+  noteError,
+  parseDelayMs,
+  resetEpisode,
+  resetEpisodeStatus,
+  sleepAbortable,
 } from "./boundary";
 import type {
   AgentBeforeSettleEventLike,
@@ -17,6 +31,8 @@ import type {
   BoundaryDeps,
   BoundaryDraftLike,
   BranchEntryLike,
+  EpisodeState,
+  FallbackDelayPolicy,
   ProjectedEntryLike,
 } from "./boundary";
 import type { ScopedEntry } from "./aliases";
@@ -121,8 +137,24 @@ function makeDeps(overrides: Partial<BoundaryDeps> = {}): BoundaryDeps {
     getCursor: () => 0,
     setCursor: vi.fn(),
     debug: vi.fn(),
+    episode: createEpisodeState(),
+    delay: { baseMs: DEFAULT_DELAY_MS, maxMs: DEFAULT_MAX_DELAY_MS },
     ...overrides,
   };
+}
+
+/** Pre-announce handler with the shared episode state wired like `index.ts`. */
+function makePreAnnounce(
+  overrides: Partial<Pick<BoundaryDeps, "getCursor" | "debug" | "episode">> & {
+    now?: () => number;
+  } = {},
+) {
+  return createPreAnnounceHandler({
+    getCursor: () => 0,
+    debug: vi.fn(),
+    episode: createEpisodeState(),
+    ...overrides,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +292,163 @@ describe("candidateOrder / nextCandidateLabel", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Episode pacing helpers
+// ---------------------------------------------------------------------------
+
+describe("formatDuration", () => {
+  it.each([
+    [0, "0s"],
+    [999, "0s"],
+    [1_000, "1s"],
+    [59_000, "59s"],
+    [60_000, "1m0s"],
+    [135_000, "2m15s"],
+    [3_600_000, "1h0m0s"],
+    [45_315_000, "12h35m15s"],
+    [90_061_000, "1d1h1m"],
+    [Number.NaN, "0s"],
+    [-5, "0s"],
+  ])("formats %dms as %s", (ms, expected) => {
+    expect(formatDuration(ms)).toBe(expected);
+  });
+});
+
+describe("fallbackDelayMs", () => {
+  const policy: FallbackDelayPolicy = { baseMs: 2_000, maxMs: 60_000 };
+
+  it("does not delay the first failure", () => {
+    expect(fallbackDelayMs(policy, 0)).toBe(0);
+    expect(fallbackDelayMs(policy, 1)).toBe(0);
+  });
+
+  it("grows exponentially from the second failure and caps", () => {
+    expect(fallbackDelayMs(policy, 2)).toBe(2_000);
+    expect(fallbackDelayMs(policy, 3)).toBe(4_000);
+    expect(fallbackDelayMs(policy, 4)).toBe(8_000);
+    expect(fallbackDelayMs(policy, 5)).toBe(16_000);
+    expect(fallbackDelayMs(policy, 6)).toBe(32_000);
+    expect(fallbackDelayMs(policy, 7)).toBe(60_000);
+    expect(fallbackDelayMs(policy, 1_000)).toBe(60_000);
+  });
+
+  it("disables on a non-positive or non-finite base or cap", () => {
+    expect(fallbackDelayMs({ baseMs: 0, maxMs: 60_000 }, 5)).toBe(0);
+    expect(fallbackDelayMs({ baseMs: -1, maxMs: 60_000 }, 5)).toBe(0);
+    expect(fallbackDelayMs({ baseMs: Number.NaN, maxMs: 60_000 }, 5)).toBe(0);
+    expect(fallbackDelayMs({ baseMs: 2_000, maxMs: 0 }, 5)).toBe(0);
+    expect(fallbackDelayMs({ baseMs: 2_000, maxMs: Number.NaN }, 5)).toBe(0);
+  });
+
+  it("ignores non-finite attempt counts and does not overflow on huge ones", () => {
+    expect(fallbackDelayMs(policy, Number.NaN)).toBe(0);
+    expect(fallbackDelayMs(policy, Number.POSITIVE_INFINITY)).toBe(0);
+    expect(fallbackDelayMs(policy, Number.MAX_SAFE_INTEGER)).toBe(60_000);
+  });
+});
+
+describe("parseDelayMs", () => {
+  it("falls back on missing, empty, or invalid values", () => {
+    expect(parseDelayMs(undefined, 2_000)).toBe(2_000);
+    expect(parseDelayMs("", 2_000)).toBe(2_000);
+    expect(parseDelayMs("   ", 2_000)).toBe(2_000);
+    expect(parseDelayMs("abc", 2_000)).toBe(2_000);
+    expect(parseDelayMs("-1", 2_000)).toBe(2_000);
+    expect(parseDelayMs("NaN", 2_000)).toBe(2_000);
+    expect(parseDelayMs("Infinity", 2_000)).toBe(2_000);
+  });
+
+  it("accepts zero (disables) and floors fractional values", () => {
+    expect(parseDelayMs("0", 2_000)).toBe(0);
+    expect(parseDelayMs("1500.9", 2_000)).toBe(1_500);
+    expect(parseDelayMs(" 3000 ", 2_000)).toBe(3_000);
+  });
+});
+
+describe("episode state", () => {
+  it("starts empty and opens the clock on the first error", () => {
+    const state = createEpisodeState();
+    expect(state).toEqual({ attempts: 0, firstErrorAt: undefined });
+    noteError(state, 1_000);
+    expect(state).toEqual({ attempts: 1, firstErrorAt: 1_000 });
+    noteError(state, 5_000);
+    expect(state).toEqual({ attempts: 2, firstErrorAt: 1_000 });
+    expect(episodeElapsedMs(state, 6_500)).toBe(5_500);
+  });
+
+  it("resets to empty", () => {
+    const state = createEpisodeState();
+    noteError(state, 1_000);
+    resetEpisode(state);
+    expect(state).toEqual({ attempts: 0, firstErrorAt: undefined });
+    expect(episodeElapsedMs(state, 9_999)).toBe(0);
+  });
+
+  it("clamps a backwards clock to zero", () => {
+    const state = createEpisodeState();
+    noteError(state, 5_000);
+    expect(episodeElapsedMs(state, 1_000)).toBe(0);
+  });
+});
+
+describe("formatPreAnnounceBanner", () => {
+  it("keeps the original wording for the first failure", () => {
+    expect(formatPreAnnounceBanner("b/m2", 1, 0)).toBe("⚠ error — next: b/m2 if retries fail");
+  });
+
+  it("leads with the count and elapsed time from the second failure", () => {
+    expect(formatPreAnnounceBanner("b/m2", 2, 45_315_000)).toBe(
+      "⚠ error #2 · retrying for 12h35m15s — next: b/m2",
+    );
+  });
+});
+
+describe("sleepAbortable", () => {
+  it("resolves after the delay", async () => {
+    vi.useFakeTimers();
+    try {
+      const promise = sleepAbortable(2_000);
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(promise).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects with DelayAbortedError when the signal aborts and clears the timer", async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      const promise = sleepAbortable(2_000, controller.signal);
+      controller.abort();
+      await expect(promise).rejects.toBeInstanceOf(DelayAbortedError);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects immediately when the signal is already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(sleepAbortable(2_000, controller.signal)).rejects.toBeInstanceOf(
+      DelayAbortedError,
+    );
+  });
+
+  it("clamps an oversized delay to the timer ceiling", async () => {
+    vi.useFakeTimers();
+    try {
+      const promise = sleepAbortable(Number.MAX_SAFE_INTEGER);
+      // Would fire immediately if the raw value overflowed the 32-bit timer.
+      await vi.advanceTimersByTimeAsync(MAX_TIMEOUT_MS);
+      await expect(promise).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Pre-announce
 // ---------------------------------------------------------------------------
 
@@ -268,11 +457,14 @@ describe("createPreAnnounceHandler", () => {
     expect(STATUS_KEY).toBe("pi-fallback");
     expect(ALL_CANDIDATES_FAILED_MESSAGE).toBe("All fallback models exhausted.");
     expect(NO_CANDIDATES_MESSAGE).toBe("No fallback models available.");
+    expect(DEFAULT_DELAY_MS).toBe(2_000);
+    expect(DEFAULT_MAX_DELAY_MS).toBe(60_000);
+    expect(MAX_TIMEOUT_MS).toBe(2_147_483_647);
   });
 
   it("sets the byte-exact banner on an errored turn when a candidate exists", async () => {
     const ctx = readyContext();
-    const handler = createPreAnnounceHandler({ getCursor: () => 0, debug: vi.fn() });
+    const handler = makePreAnnounce();
     await handler({ outcome: "error" }, ctx);
     expect(ctx.ui.setStatus).toHaveBeenCalledWith(
       STATUS_KEY,
@@ -280,28 +472,67 @@ describe("createPreAnnounceHandler", () => {
     );
   });
 
-  it("clears the banner on completed and aborted turns", async () => {
-    const handler = createPreAnnounceHandler({ getCursor: () => 0, debug: vi.fn() });
-    for (const outcome of ["completed", "aborted"] as const) {
-      const ctx = readyContext();
-      await handler({ outcome }, ctx);
-      expect(ctx.ui.setStatus).toHaveBeenCalledWith(STATUS_KEY, undefined);
-    }
+  it("counts the episode and adds the elapsed time from the second error on", async () => {
+    let clock = 1_000;
+    const handler = makePreAnnounce({ now: () => clock });
+    const first = readyContext();
+    await handler({ outcome: "error" }, first);
+    expect(first.ui.setStatus).toHaveBeenLastCalledWith(
+      STATUS_KEY,
+      "⚠ error — next: b/m2 if retries fail",
+    );
+
+    clock += 45_315_000; // 12h35m15s
+    const second = readyContext();
+    await handler({ outcome: "error" }, second);
+    expect(second.ui.setStatus).toHaveBeenLastCalledWith(
+      STATUS_KEY,
+      "⚠ error #2 · retrying for 12h35m15s — next: b/m2",
+    );
+
+    clock += 1_000;
+    const third = readyContext();
+    await handler({ outcome: "error" }, third);
+    expect(third.ui.setStatus).toHaveBeenLastCalledWith(
+      STATUS_KEY,
+      "⚠ error #3 · retrying for 12h35m16s — next: b/m2",
+    );
+  });
+
+  it("resets the episode on completed and aborted turns", async () => {
+    let clock = 1_000;
+    const handler = makePreAnnounce({ now: () => clock });
+    await handler({ outcome: "error" }, readyContext());
+    await handler({ outcome: "error" }, readyContext());
+    clock += 5_000;
+    const settled = readyContext();
+    await handler({ outcome: "completed" }, settled);
+    expect(settled.ui.setStatus).toHaveBeenLastCalledWith(STATUS_KEY, undefined);
+
+    const after = readyContext();
+    await handler({ outcome: "error" }, after);
+    expect(after.ui.setStatus).toHaveBeenLastCalledWith(
+      STATUS_KEY,
+      "⚠ error — next: b/m2 if retries fail",
+    );
   });
 
   it("clears the banner on an errored turn when no candidate is available", async () => {
     const ctx = makeContext();
-    const handler = createPreAnnounceHandler({ getCursor: () => 0, debug: vi.fn() });
+    const handler = makePreAnnounce();
     await handler({ outcome: "error" }, ctx);
     expect(ctx.ui.setStatus).toHaveBeenCalledWith(STATUS_KEY, undefined);
   });
 
-  it("makes no UI calls without a UI", async () => {
+  it("tracks the episode without a UI (the delay still needs the count)", async () => {
+    const episode = createEpisodeState();
     const ctx = readyContext();
     ctx.hasUI = false;
-    const handler = createPreAnnounceHandler({ getCursor: () => 0, debug: vi.fn() });
+    const handler = makePreAnnounce({ episode });
+    await handler({ outcome: "error" }, ctx);
     await handler({ outcome: "error" }, ctx);
     expect(ctx.ui.setStatus).not.toHaveBeenCalled();
+    expect(episode.attempts).toBe(2);
   });
 
   it("does not reject when the UI throws", async () => {
@@ -309,7 +540,7 @@ describe("createPreAnnounceHandler", () => {
     ctx.ui.setStatus = vi.fn(() => {
       throw new Error("no ui");
     });
-    const handler = createPreAnnounceHandler({ getCursor: () => 0, debug: vi.fn() });
+    const handler = makePreAnnounce();
     await expect(handler({ outcome: "error" }, ctx)).resolves.toBeUndefined();
   });
 
@@ -320,15 +551,181 @@ describe("createPreAnnounceHandler", () => {
         throw new Error("ctx is stale");
       },
     });
-    const handler = createPreAnnounceHandler({ getCursor: () => 0, debug: vi.fn() });
+    const handler = makePreAnnounce();
     await expect(handler({ outcome: "error" }, ctx)).resolves.toBeUndefined();
     expect(ctx.ui.setStatus).not.toHaveBeenCalled();
+  });
+
+  it("keeps counting when the UI availability getter throws mid-episode", async () => {
+    const episode = createEpisodeState();
+    const handler = makePreAnnounce({ episode });
+    await handler({ outcome: "error" }, readyContext());
+    const broken = readyContext();
+    Object.defineProperty(broken, "hasUI", {
+      get() {
+        throw new Error("ctx is stale");
+      },
+    });
+    await handler({ outcome: "error" }, broken);
+    expect(episode.attempts).toBe(2);
   });
 });
 
 // ---------------------------------------------------------------------------
 // Boundary handler
 // ---------------------------------------------------------------------------
+
+describe("resetEpisodeStatus", () => {
+  it("clears the banner and the episode", () => {
+    const episode = createEpisodeState();
+    noteError(episode, 1_000);
+    const ctx = readyContext();
+    resetEpisodeStatus(ctx, episode, vi.fn());
+    expect(episode).toEqual({ attempts: 0, firstErrorAt: undefined });
+    expect(ctx.ui.setStatus).toHaveBeenCalledWith(STATUS_KEY, undefined);
+  });
+
+  it("resets the state even when the UI throws", () => {
+    const episode = createEpisodeState();
+    noteError(episode, 1_000);
+    const ctx = readyContext();
+    ctx.ui.setStatus = vi.fn(() => {
+      throw new Error("no ui");
+    });
+    expect(() => resetEpisodeStatus(ctx, episode, vi.fn())).not.toThrow();
+    expect(episode.attempts).toBe(0);
+  });
+
+  it("resets without a UI and makes no UI calls", () => {
+    const episode = createEpisodeState();
+    noteError(episode, 1_000);
+    const ctx = readyContext();
+    ctx.hasUI = false;
+    resetEpisodeStatus(ctx, episode, vi.fn());
+    expect(episode.attempts).toBe(0);
+    expect(ctx.ui.setStatus).not.toHaveBeenCalled();
+  });
+});
+
+describe("createBoundaryHandler — inter-attempt delay", () => {
+  it("switches immediately after the first failure", async () => {
+    const deps = makeDeps({ sleep: vi.fn(async () => {}) });
+    const ctx = readyContext();
+    const event = makeEvent({
+      context: { contextEntries: [tailError("e1")], canContinue: false },
+    });
+
+    const result = await createBoundaryHandler(deps)(event, ctx);
+
+    expect(deps.sleep).not.toHaveBeenCalled();
+    expect(result?.continue).toBe(true);
+  });
+
+  it("waits the backoff before the second fallback switch", async () => {
+    const deps = makeDeps({
+      sleep: vi.fn(async () => {}),
+      episode: { attempts: 2, firstErrorAt: 0 },
+    });
+    const ctx = readyContext();
+    const event = makeEvent({
+      context: { contextEntries: [tailError("e1")], canContinue: false },
+    });
+
+    const result = await createBoundaryHandler(deps)(event, ctx);
+
+    expect(deps.sleep).toHaveBeenCalledWith(2_000, ctx.signal);
+    expect(deps.debug).toHaveBeenCalledWith(
+      "inter-attempt delay 2000ms after 2 consecutive error(s)",
+    );
+    expect(result?.continue).toBe(true);
+    expect(deps.setModel).toHaveBeenCalledWith({ provider: "b", id: "m2" });
+  });
+
+  it("grows the wait with the episode count and caps it", async () => {
+    const deps = makeDeps({
+      sleep: vi.fn(async () => {}),
+      episode: { attempts: 9, firstErrorAt: 0 },
+      delay: { baseMs: 2_000, maxMs: 60_000 },
+    });
+    const ctx = readyContext();
+    const event = makeEvent({
+      context: { contextEntries: [tailError("e1")], canContinue: false },
+    });
+
+    await createBoundaryHandler(deps)(event, ctx);
+
+    expect(deps.sleep).toHaveBeenCalledWith(60_000, ctx.signal);
+  });
+
+  it("disables the wait when the policy base is zero", async () => {
+    const deps = makeDeps({
+      sleep: vi.fn(async () => {}),
+      episode: { attempts: 4, firstErrorAt: 0 },
+      delay: { baseMs: 0, maxMs: 60_000 },
+    });
+    const ctx = readyContext();
+    const event = makeEvent({
+      context: { contextEntries: [tailError("e1")], canContinue: false },
+    });
+
+    await createBoundaryHandler(deps)(event, ctx);
+
+    expect(deps.sleep).not.toHaveBeenCalled();
+  });
+
+  it("settles without continuing when the delay is aborted", async () => {
+    const deps = makeDeps({
+      episode: { attempts: 2, firstErrorAt: 0 },
+      sleep: vi.fn(async () => {
+        throw new DelayAbortedError();
+      }),
+    });
+    const ctx = readyContext();
+    const event = makeEvent({
+      context: { contextEntries: [tailError("e1")], canContinue: false },
+    });
+
+    await expect(createBoundaryHandler(deps)(event, ctx)).resolves.toBeUndefined();
+
+    expect(deps.setModel).not.toHaveBeenCalled();
+    expect(ctx.ui.setStatus).toHaveBeenCalledWith(STATUS_KEY, undefined);
+    expect(deps.debug).toHaveBeenCalledWith(
+      expect.stringContaining("inter-attempt delay aborted"),
+    );
+  });
+
+  it("does not wait when no candidate can be switched", async () => {
+    const deps = makeDeps({
+      sleep: vi.fn(async () => {}),
+      episode: { attempts: 5, firstErrorAt: 0 },
+    });
+    const ctx = makeContext({ branch: [branchMessage("e1", "error")] });
+    const event = makeEvent({
+      context: { contextEntries: [tailError("e1")], canContinue: false },
+    });
+
+    await expect(createBoundaryHandler(deps)(event, ctx)).resolves.toBeUndefined();
+
+    expect(deps.sleep).not.toHaveBeenCalled();
+    expect(deps.setModel).not.toHaveBeenCalled();
+  });
+
+  it("does not wait for a non-error outcome", async () => {
+    const deps = makeDeps({
+      sleep: vi.fn(async () => {}),
+      episode: { attempts: 5, firstErrorAt: 0 },
+    });
+    const ctx = readyContext();
+    const event = makeEvent({
+      outcome: "completed",
+      context: { contextEntries: [tailError("e1")], canContinue: false },
+    });
+
+    await expect(createBoundaryHandler(deps)(event, ctx)).resolves.toBeUndefined();
+
+    expect(deps.sleep).not.toHaveBeenCalled();
+  });
+});
 
 describe("createBoundaryHandler — outcome guard", () => {
   it.each(["completed", "aborted"] as const)(

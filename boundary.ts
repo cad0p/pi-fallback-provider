@@ -7,6 +7,11 @@
  * `context_edit` draft, switches to the next authenticated scoped model, and
  * asks pi to continue — no user message is appended.
  *
+ * Consecutive failures form an episode: the pre-announce banner carries the
+ * attempt count and elapsed time, and each fallback switch after the first
+ * waits an exponential inter-attempt delay so a quota window is paced instead
+ * of hammered at provider speed.
+ *
  * This module contains ZERO pi imports so it can be unit-tested with plain
  * vitest. `index.ts` wires it into the live extension API.
  */
@@ -22,6 +27,15 @@ export const ALL_CANDIDATES_FAILED_MESSAGE = "All fallback models exhausted.";
 
 /** Warning shown when the scoped-model list holds no fallback candidate. */
 export const NO_CANDIDATES_MESSAGE = "No fallback models available.";
+
+/** Default inter-attempt backoff base (ms); `0` disables the delay. */
+export const DEFAULT_DELAY_MS = 2_000;
+
+/** Default inter-attempt backoff cap (ms). */
+export const DEFAULT_MAX_DELAY_MS = 60_000;
+
+/** Node's maximum `setTimeout` delay; larger values fire immediately. */
+export const MAX_TIMEOUT_MS = 2_147_483_647;
 
 /** Structural view of a boundary draft; only `type` is interpreted here. */
 export interface BoundaryDraftLike {
@@ -69,11 +83,27 @@ export interface BoundaryContextLike {
     find(provider: string, id: string): { provider: string; id: string } | undefined;
     getAvailable(): Array<{ provider: string; id: string }>;
   };
+  /** Run abort signal; aborts the inter-attempt delay when the user stops the run. */
+  signal?: AbortSignal;
   hasUI: boolean;
   ui: {
     notify(message: string, level: "info" | "warning" | "error"): void;
     setStatus(key: string, text: string | undefined): void;
   };
+}
+
+/** Consecutive errored turns since the last successful, aborted, or fresh turn. */
+export interface EpisodeState {
+  /** Number of consecutive errored turns (0 when no episode is open). */
+  attempts: number;
+  /** Clock time of the first error in the episode, or undefined when none. */
+  firstErrorAt: number | undefined;
+}
+
+/** Exponential inter-attempt backoff policy. `baseMs <= 0` disables the delay. */
+export interface FallbackDelayPolicy {
+  baseMs: number;
+  maxMs: number;
 }
 
 /** Side effects the boundary handler needs from the extension host. */
@@ -82,6 +112,12 @@ export interface BoundaryDeps {
   getCursor(): number;
   setCursor(next: number): void;
   debug(...args: unknown[]): void;
+  /** Shared consecutive-error episode state (banner count/elapsed + delay input). */
+  episode: EpisodeState;
+  /** Inter-attempt backoff policy. */
+  delay: FallbackDelayPolicy;
+  /** Injectable abortable sleep for tests; defaults to {@link sleepAbortable}. */
+  sleep?(ms: number, signal?: AbortSignal): Promise<void>;
 }
 
 /** Boundary handler return shape: drafts to commit and whether to continue. */
@@ -185,22 +221,160 @@ function warn(ctx: BoundaryContextLike, debug: (...args: unknown[]) => void, mes
   }
 }
 
+// ---------------------------------------------------------------------------
+// Episode state, pacing, and banner formatting
+// ---------------------------------------------------------------------------
+
+/** Fresh episode state (no errors yet). */
+export function createEpisodeState(): EpisodeState {
+  return { attempts: 0, firstErrorAt: undefined };
+}
+
+/** Record one more errored turn; the first error opens the episode clock. */
+export function noteError(state: EpisodeState, now: number): void {
+  if (state.firstErrorAt === undefined) state.firstErrorAt = now;
+  state.attempts += 1;
+}
+
+/** Close the episode (success, abort, fresh prompt, shutdown). */
+export function resetEpisode(state: EpisodeState): void {
+  state.attempts = 0;
+  state.firstErrorAt = undefined;
+}
+
+/** Milliseconds since the first error of the open episode, or 0 when none. */
+export function episodeElapsedMs(state: EpisodeState, now: number): number {
+  if (state.firstErrorAt === undefined) return 0;
+  return Math.max(0, now - state.firstErrorAt);
+}
+
+/**
+ * Inter-attempt delay before the next fallback switch: none after the first
+ * failure, then `min(base × 2^(attempts-2), cap)`; `baseMs <= 0` disables.
+ */
+export function fallbackDelayMs(policy: FallbackDelayPolicy, attempts: number): number {
+  if (!Number.isFinite(policy.baseMs) || policy.baseMs <= 0) return 0;
+  if (!Number.isFinite(attempts) || attempts <= 1) return 0;
+  const exponent = Math.min(Math.floor(attempts) - 2, 30);
+  const delay = policy.baseMs * 2 ** exponent;
+  const safe = Number.isSafeInteger(delay) ? delay : Number.MAX_SAFE_INTEGER;
+  const cap = Number.isFinite(policy.maxMs) && policy.maxMs > 0 ? policy.maxMs : 0;
+  return Math.min(safe, cap);
+}
+
+/** Parse an env delay value; undefined/empty/negative/non-numeric → fallback. */
+export function parseDelayMs(raw: string | undefined, fallback: number): number {
+  if (raw === undefined) return fallback;
+  const trimmed = raw.trim();
+  if (trimmed === "") return fallback;
+  const value = Number(trimmed);
+  if (!Number.isFinite(value) || value < 0) return fallback;
+  return Math.floor(value);
+}
+
+/** Compact episode duration: `15s`, `2m3s`, `12h35m15s`, `1d3h5m`. */
+export function formatDuration(ms: number): string {
+  const safe = Number.isFinite(ms) && ms > 0 ? ms : 0;
+  const totalSeconds = Math.floor(safe / 1000);
+  const days = Math.floor(totalSeconds / 86_400);
+  const hours = Math.floor((totalSeconds % 86_400) / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  if (days > 0) return `${days}d${hours}h${minutes}m`;
+  if (hours > 0) return `${hours}h${minutes}m${seconds}s`;
+  if (minutes > 0) return `${minutes}m${seconds}s`;
+  return `${seconds}s`;
+}
+
+/**
+ * Pre-announce banner text. The first failure keeps the original wording; from
+ * the second consecutive failure the episode count and elapsed time lead.
+ */
+export function formatPreAnnounceBanner(next: string, attempts: number, elapsedMs: number): string {
+  if (attempts <= 1) return `⚠ error — next: ${next} if retries fail`;
+  return `⚠ error #${attempts} · retrying for ${formatDuration(elapsedMs)} — next: ${next}`;
+}
+
+/** Raised when the inter-attempt delay is cancelled by the run's abort signal. */
+export class DelayAbortedError extends Error {
+  constructor() {
+    super("Fallback delay aborted");
+    this.name = "DelayAbortedError";
+  }
+}
+
+/** Resolve after `ms`, rejecting with {@link DelayAbortedError} when `signal` aborts. */
+export function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new DelayAbortedError());
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    function cleanup(): void {
+      if (timer !== undefined) clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    }
+    function finish(err?: Error): void {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (err) reject(err);
+      else resolve();
+    }
+    function onAbort(): void {
+      finish(new DelayAbortedError());
+    }
+    timer = setTimeout(() => finish(), Math.min(Math.max(ms, 0), MAX_TIMEOUT_MS));
+    signal?.addEventListener("abort", onAbort, { once: true });
+    // The signal may have aborted between the guard above and the listener
+    // registration; re-check so that race cannot wait out the full delay.
+    if (signal?.aborted) onAbort();
+  });
+}
+
+/** Close the episode and clear the banner (fresh prompt, settle, shutdown). */
+export function resetEpisodeStatus(
+  ctx: BoundaryContextLike,
+  state: EpisodeState,
+  debug: (...args: unknown[]) => void,
+): void {
+  resetEpisode(state);
+  clearStatus(ctx, debug);
+}
+
 /**
  * `turn_end` handler: pre-announce the likely next candidate while pi is still
- * retrying, and clear the banner once the turn settles without an error.
+ * retrying, track the consecutive-error episode (count + first-error time) that
+ * feeds the boundary delay, and clear the banner once the turn settles without
+ * an error.
  */
-export function createPreAnnounceHandler(deps: Pick<BoundaryDeps, "getCursor" | "debug">): (
+export function createPreAnnounceHandler(
+  deps: Pick<BoundaryDeps, "getCursor" | "debug" | "episode"> & { now?: () => number },
+): (
   event: { outcome: "completed" | "aborted" | "error" },
   ctx: BoundaryContextLike,
 ) => Promise<void> {
+  const now = deps.now ?? Date.now;
   return async (event, ctx) => {
     try {
+      // Episode bookkeeping is behavior (it feeds the boundary delay), so it
+      // runs even when there is no UI to render the banner.
+      if (event.outcome === "error") {
+        noteError(deps.episode, now());
+      } else {
+        resetEpisode(deps.episode);
+      }
       if (!ctx.hasUI) return;
       if (event.outcome === "error") {
         const next = nextCandidateLabel(ctx, deps.getCursor());
         ctx.ui.setStatus(
           STATUS_KEY,
-          next ? `⚠ error — next: ${next} if retries fail` : undefined,
+          next
+            ? formatPreAnnounceBanner(
+                next,
+                deps.episode.attempts,
+                episodeElapsedMs(deps.episode, now()),
+              )
+            : undefined,
         );
       } else {
         ctx.ui.setStatus(STATUS_KEY, undefined);
@@ -265,6 +439,23 @@ export function createBoundaryHandler(deps: BoundaryDeps): (
       clearStatus(ctx, deps.debug);
       warn(ctx, deps.debug, NO_CANDIDATES_MESSAGE);
       return undefined;
+    }
+
+    // Pace repeated fallbacks: no delay after the first failure, then
+    // exponential backoff capped by the policy. Aborting the run during the
+    // wait settles without continuing.
+    const delayMs = fallbackDelayMs(deps.delay, deps.episode.attempts);
+    if (delayMs > 0) {
+      deps.debug(
+        `inter-attempt delay ${delayMs}ms after ${deps.episode.attempts} consecutive error(s)`,
+      );
+      try {
+        await (deps.sleep ?? sleepAbortable)(delayMs, ctx.signal);
+      } catch (err) {
+        deps.debug(`inter-attempt delay aborted: ${err}`);
+        clearStatus(ctx, deps.debug);
+        return undefined;
+      }
     }
 
     for (const candidate of order) {

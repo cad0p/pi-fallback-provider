@@ -16,18 +16,26 @@ terminal error
   → pi's own recovery runs: retries, auto-compaction, queued continuations
   → agent_before_settle fires (no automatic recovery left)
   → omit the failed assistant attempt via a model-context edit
+  → wait the inter-attempt backoff (from the second consecutive failure)
   → switch to the next authenticated model
   → pi continues from the same context point — no message is appended
 ```
 
 - **No error classification** — works for any error type
 - **Waits for pi's own recovery** — fires only after retries, auto-compaction,
-  and queued continuations are exhausted; no timer heuristics
+  and queued continuations are exhausted; the only wait it adds is the
+  inter-attempt backoff on repeated failures
 - **Pre-announce banner** — after an errored turn, the footer shows
-  `⚠ error — next: <provider>/<id> if retries fail` while pi retries. It
+  `⚠ error — next: <provider>/<id> if retries fail` while pi retries. From the
+  second consecutive failure it carries the episode count and elapsed time,
+  e.g. `⚠ error #37 · retrying for 12h35m15s — next: <provider>/<id>`. It
   clears on a successful or completed turn, a fresh prompt, a successful
   switch, when no candidate exists, and on session shutdown; all status
   updates are UI-gated
+- **Paced fallbacks** — the first fallback after a single error switches
+  immediately; each consecutive failure doubles the wait before the next
+  switch (`2s → 4s → …`, capped at 60s), so a quota window is paced instead
+  of hammered at provider speed. See [Configuration](#configuration)
 - **Appends nothing** — the failed attempt is omitted from future model
   context via an append-only `context_edit`; a `continue` message is never
   injected
@@ -70,6 +78,21 @@ Set `PI_FALLBACK_DEBUG=true` for verbose logging:
 
 ```bash
 PI_FALLBACK_DEBUG=true pi
+```
+
+Inter-attempt pacing is on by default. The first fallback after a single error
+switches immediately; each consecutive failure doubles the wait before the next
+switch (`2s, 4s, 8s, …`) up to the cap. Tune or disable it with:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PI_FALLBACK_DELAY_MS` | `2000` | Backoff base in milliseconds; `0` disables the delay |
+| `PI_FALLBACK_MAX_DELAY_MS` | `60000` | Backoff cap in milliseconds |
+
+```bash
+# Pace faster than the default, or disable pacing entirely
+PI_FALLBACK_DELAY_MS=500 pi
+PI_FALLBACK_DELAY_MS=0 pi
 ```
 
 ## Manual alias refresh
