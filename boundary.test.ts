@@ -348,6 +348,11 @@ describe("fallbackDelayMs", () => {
     expect(fallbackDelayMs(policy, 1, Number.POSITIVE_INFINITY)).toBe(2_000);
   });
 
+  it("floors a fractional cycle length", () => {
+    expect(fallbackDelayMs(policy, 2, 2.5)).toBe(2_000);
+    expect(fallbackDelayMs(policy, 3, 2.5)).toBe(4_000);
+  });
+
   it("disables on a non-positive or NaN base or cap", () => {
     expect(fallbackDelayMs({ baseMs: 0, maxMs: 60_000 }, 5, 2)).toBe(0);
     expect(fallbackDelayMs({ baseMs: -1, maxMs: 60_000 }, 5, 2)).toBe(0);
@@ -359,6 +364,13 @@ describe("fallbackDelayMs", () => {
 
   it("treats an infinite cap as no cap", () => {
     expect(fallbackDelayMs({ baseMs: 2_000, maxMs: Number.POSITIVE_INFINITY }, 7, 2)).toBe(64_000);
+  });
+
+  it("caps the exponent and the safe-integer guard", () => {
+    expect(fallbackDelayMs({ baseMs: 2_000, maxMs: Number.POSITIVE_INFINITY }, 33, 2)).toBe(
+      2_147_483_648_000,
+    );
+    expect(fallbackDelayMs({ baseMs: 0.5, maxMs: 1_000 }, 1, 0)).toBe(1_000);
   });
 
   it("ignores non-finite switch counts and does not overflow on huge ones", () => {
@@ -772,6 +784,27 @@ describe("createBoundaryHandler — inter-attempt delay", () => {
     const result = await createBoundaryHandler(deps)(event, ctx);
 
     expect(deps.sleep).not.toHaveBeenCalled();
+    expect(result?.continue).toBe(true);
+    expect(deps.episode.switches).toBe(3);
+  });
+
+  it("uses the scoped length, not the available-candidate count, for the cycle", async () => {
+    const deps = makeDeps({
+      sleep: vi.fn(async () => {}),
+      episode: { attempts: 3, firstErrorAt: 0, switches: 2 },
+    });
+    const ctx = makeContext({
+      branch: [branchMessage("e1", "error")],
+      scopedModels: scoped(["a/m1", "b/m2", "c/m3"]),
+      available: ["a/m1", "b/m2"], // c/m3 unauthenticated → order.length is 1
+    });
+    const event = makeEvent({
+      context: { contextEntries: [tailError("e1")], canContinue: false },
+    });
+
+    const result = await createBoundaryHandler(deps)(event, ctx);
+
+    expect(deps.sleep).not.toHaveBeenCalled(); // switches=2 < scoped.length=3
     expect(result?.continue).toBe(true);
     expect(deps.episode.switches).toBe(3);
   });
