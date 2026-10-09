@@ -357,8 +357,10 @@ export function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> 
       finish(new DelayAbortedError());
     }
     timer = setTimeout(() => finish(), Math.min(Math.max(ms, 0), MAX_TIMEOUT_MS));
-    // A pending wait must not keep the process alive (shutdown during a delay).
-    timer.unref?.();
+    // Deliberately NOT unref'd: in a headless `pi -p` run this pending wait is
+    // the only ref'd handle, so unref() would let Node exit mid-delay (exit 0,
+    // no switch). The wait is bounded by MAX_TIMEOUT_MS, so any shutdown delay
+    // is capped there.
     signal?.addEventListener("abort", onAbort, { once: true });
   });
 }

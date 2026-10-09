@@ -577,15 +577,40 @@ describe("createPreAnnounceHandler", () => {
     );
   });
 
-  it("resets the episode on completed and aborted turns", async () => {
+  it.each([
+    [1, "b/m2"],
+    [2, "c/m3"],
+  ] as const)(
+    "announces the next candidate from cursor %i in a 3-model scope",
+    async (cursor, expected) => {
+      const ctx = makeContext({
+        scopedModels: scoped(["a/m1", "b/m2", "c/m3"]),
+        available: ["a/m1", "b/m2", "c/m3"],
+      });
+      const handler = makePreAnnounce({ getCursor: () => cursor });
+
+      await handler({ outcome: "error" }, ctx);
+
+      expect(ctx.ui.setStatus).toHaveBeenLastCalledWith(
+        STATUS_KEY,
+        `⚠ error — next: ${expected} if retries fail`,
+      );
+    },
+  );
+
+  it.each(["completed", "aborted"] as const)("resets the episode on %s turns", async (outcome) => {
     let clock = 1_000;
-    const handler = makePreAnnounce({ now: () => clock });
+    const episode = createEpisodeState();
+    const handler = makePreAnnounce({ now: () => clock, episode });
     await handler({ outcome: "error" }, readyContext());
+    episode.switches = 3; // simulate fallback switches already completed
     await handler({ outcome: "error" }, readyContext());
     clock += 5_000;
+
     const settled = readyContext();
-    await handler({ outcome: "completed" }, settled);
+    await handler({ outcome }, settled);
     expect(settled.ui.setStatus).toHaveBeenLastCalledWith(STATUS_KEY, undefined);
+    expect(episode).toEqual({ attempts: 0, firstErrorAt: undefined, switches: 0 });
 
     const after = readyContext();
     await handler({ outcome: "error" }, after);
@@ -593,6 +618,7 @@ describe("createPreAnnounceHandler", () => {
       STATUS_KEY,
       "⚠ error — next: b/m2 if retries fail",
     );
+    expect(episode.switches).toBe(0);
   });
 
   it("clears the banner on an errored turn when no candidate is available", async () => {
@@ -618,8 +644,10 @@ describe("createPreAnnounceHandler", () => {
     ctx.ui.setStatus = vi.fn(() => {
       throw new Error("no ui");
     });
-    const handler = makePreAnnounce();
+    const debug = vi.fn();
+    const handler = makePreAnnounce({ debug });
     await expect(handler({ outcome: "error" }, ctx)).resolves.toBeUndefined();
+    expect(debug).toHaveBeenCalledWith("status update failed: Error: no ui");
   });
 
   it("does not reject when the UI availability getter throws", async () => {
@@ -719,6 +747,32 @@ describe("createBoundaryHandler — inter-attempt delay", () => {
     expect(result?.continue).toBe(true);
     expect(deps.setModel).toHaveBeenCalledWith({ provider: "b", id: "m2" });
     expect(deps.episode.switches).toBe(2);
+  });
+
+  it("waits through the default abortable sleep when no sleep dep is injected", async () => {
+    vi.useFakeTimers();
+    try {
+      const deps = makeDeps({ episode: { attempts: 2, firstErrorAt: 0, switches: 1 } });
+      const ctx = readyContext();
+      const event = makeEvent({
+        context: { contextEntries: [tailError("e1")], canContinue: false },
+      });
+
+      let settled = false;
+      const pending = createBoundaryHandler(deps)(event, ctx).then((result) => {
+        settled = true;
+        return result;
+      });
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(settled).toBe(false);
+      expect(deps.setModel).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(pending).resolves.toMatchObject({ continue: true });
+      expect(deps.setModel).toHaveBeenCalledWith({ provider: "b", id: "m2" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("grows the wait with the switch count and caps it", async () => {
@@ -1062,7 +1116,10 @@ describe("createBoundaryHandler — bail-outs", () => {
     await expect(createBoundaryHandler(deps)(event, ctx)).resolves.toBeUndefined();
     expect(deps.setModel).not.toHaveBeenCalled();
     expect(ctx.ui.setStatus).toHaveBeenCalledWith(STATUS_KEY, undefined);
-    expect(deps.debug).toHaveBeenCalled();
+    expect(deps.debug).toHaveBeenCalledWith("agent_before_settle error");
+    expect(deps.debug).toHaveBeenCalledWith(
+      "no model-visible errored tail to omit — bailing out",
+    );
   });
 
   it("bails out on an empty projection that cannot continue", async () => {
@@ -1161,6 +1218,8 @@ describe("createBoundaryHandler — bail-outs", () => {
 
     await expect(createBoundaryHandler(deps)(event, ctx)).resolves.toBeUndefined();
     expect(deps.setModel).not.toHaveBeenCalled();
+    expect(deps.debug).toHaveBeenCalledWith("candidate not in registry: b/m2");
+    expect(deps.debug).toHaveBeenCalledWith("all fallback candidates failed to switch");
     expect(ctx.ui.notify).toHaveBeenCalledWith(ALL_CANDIDATES_FAILED_MESSAGE, "warning");
   });
 });
@@ -1221,6 +1280,7 @@ describe("createBoundaryHandler — candidate failure handling", () => {
     const result = await createBoundaryHandler(deps)(event, ctx);
 
     expect(result?.continue).toBe(true);
+    expect(deps.debug).toHaveBeenCalledWith("setModel threw for b/m2: Error: no key");
     expect(deps.setModel).toHaveBeenCalledTimes(2);
     expect(deps.setModel).toHaveBeenNthCalledWith(1, { provider: "b", id: "m2" });
     expect(deps.setModel).toHaveBeenNthCalledWith(2, { provider: "c", id: "m3" });
@@ -1264,6 +1324,7 @@ describe("createBoundaryHandler — candidate failure handling", () => {
 
     const result = await createBoundaryHandler(deps)(event, ctx);
 
+    expect(deps.debug).toHaveBeenCalledWith("status update failed: Error: no ui");
     expect(result).toEqual({
       entries: [{ type: "context_edit", targetId: "e1", replacement: null }],
       continue: true,
@@ -1316,6 +1377,8 @@ describe("createBoundaryHandler — candidate failure handling", () => {
     });
 
     await expect(createBoundaryHandler(deps)(event, ctx)).resolves.toBeUndefined();
+    expect(deps.debug).toHaveBeenCalledWith("all fallback candidates failed to switch");
+    expect(deps.debug).toHaveBeenCalledWith("notify failed: Error: no ui");
   });
 });
 
@@ -1325,7 +1388,7 @@ describe("createBoundaryHandler — repeated invocations", () => {
     const setCursor = vi.fn((next: number) => {
       cursor = next;
     });
-    const deps = makeDeps({ getCursor: () => cursor, setCursor });
+    const deps = makeDeps({ getCursor: () => cursor, setCursor, sleep: vi.fn(async () => {}) });
     const ctx = makeContext({
       branch: [branchMessage("e1", "error")],
       scopedModels: scoped(["a/m1", "b/m2", "c/m3"]),
