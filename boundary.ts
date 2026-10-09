@@ -258,16 +258,25 @@ export function episodeElapsedMs(state: EpisodeState, now: number): number {
 }
 
 /**
- * Inter-attempt delay before the next fallback switch, keyed off the number of
- * switches already completed in the episode: `0` → no delay (the first switch),
- * `1` → base, `2` → 2×base, … capped at `maxMs`. `baseMs <= 0`, `maxMs <= 0`,
- * or `NaN` on either disables the delay; `maxMs === Infinity` means no cap.
+ * Inter-attempt delay before the next fallback switch. The first full pass
+ * over the scoped models is immediate (`completedSwitches < cycleLength`);
+ * from the second pass the delay grows exponentially from the base: the first
+ * switch of pass two waits `baseMs`, then `2×baseMs`, … capped at `maxMs`.
+ * `baseMs <= 0`, `maxMs <= 0`, or `NaN` on either disables the delay;
+ * `maxMs === Infinity` means no cap; a `cycleLength` below 1 (or non-finite)
+ * is treated as 1.
  */
-export function fallbackDelayMs(policy: FallbackDelayPolicy, completedSwitches: number): number {
+export function fallbackDelayMs(
+  policy: FallbackDelayPolicy,
+  completedSwitches: number,
+  cycleLength: number,
+): number {
   if (!Number.isFinite(policy.baseMs) || policy.baseMs <= 0) return 0;
   const switches = Math.floor(completedSwitches);
-  if (!Number.isFinite(completedSwitches) || switches < 1) return 0;
-  const exponent = Math.min(switches - 1, 30);
+  if (!Number.isFinite(completedSwitches)) return 0;
+  const cycle = Math.max(1, Math.floor(Number.isFinite(cycleLength) ? cycleLength : 1));
+  if (switches < cycle) return 0;
+  const exponent = Math.min(switches - cycle, 30);
   const delay = policy.baseMs * 2 ** exponent;
   const safe = Number.isSafeInteger(delay) ? delay : Number.MAX_SAFE_INTEGER;
   if (Number.isNaN(policy.maxMs) || policy.maxMs <= 0) return 0;
@@ -475,14 +484,15 @@ export function createBoundaryHandler(deps: BoundaryDeps): (
       return undefined;
     }
 
-    // Pace repeated fallbacks: the first switch is immediate, then exponential
-    // backoff capped by the policy. pi 1.1.0 has no run signal at this boundary,
-    // so the wait completes even when the user aborts; pi then drops the
-    // continuation via its own boundary-abort check (BoundaryContextLike.signal).
-    const delayMs = fallbackDelayMs(deps.delay, deps.episode.switches);
+    // Pace repeated fallbacks: the first full pass over the scoped models is
+    // immediate, then exponential backoff capped by the policy. pi 1.1.0 has no
+    // run signal at this boundary, so the wait completes even when the user
+    // aborts; pi then drops the continuation via its own boundary-abort check
+    // (BoundaryContextLike.signal).
+    const delayMs = fallbackDelayMs(deps.delay, deps.episode.switches, scoped.length);
     if (delayMs > 0) {
       deps.debug(
-        `inter-attempt delay ${delayMs}ms after ${deps.episode.switches} fallback switch(es)`,
+        `inter-attempt delay ${delayMs}ms after ${deps.episode.switches} fallback switch(es) (cycle length ${scoped.length})`,
       );
       try {
         await (deps.sleep ?? sleepAbortable)(delayMs, ctx.signal);
