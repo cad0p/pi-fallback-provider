@@ -775,6 +775,33 @@ describe("createBoundaryHandler — inter-attempt delay", () => {
     }
   });
 
+  it("aborts the default sleep when the host signal aborts mid-wait", async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      const deps = makeDeps({ episode: { attempts: 2, firstErrorAt: 0, switches: 1 } });
+      const ctx = readyContext();
+      ctx.signal = controller.signal;
+      const event = makeEvent({
+        context: { contextEntries: [tailError("e1")], canContinue: false },
+      });
+
+      const pending = createBoundaryHandler(deps)(event, ctx);
+      await vi.advanceTimersByTimeAsync(1_000);
+      controller.abort();
+      await vi.advanceTimersByTimeAsync(2_000); // flush any timer the abort missed
+
+      await expect(pending).resolves.toBeUndefined();
+      expect(deps.setModel).not.toHaveBeenCalled();
+      expect(deps.debug).toHaveBeenCalledWith(
+        expect.stringContaining("inter-attempt delay aborted"),
+      );
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("grows the wait with the switch count and caps it", async () => {
     const deps = makeDeps({
       sleep: vi.fn(async () => {}),
