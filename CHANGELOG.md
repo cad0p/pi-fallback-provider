@@ -11,6 +11,7 @@ All notable changes to this project will be documented in this file.
 ### 🚀 Features
 
 - Fallback via settle-boundary context edits (closes #14)
+- Banner episode count and paced fallback switches (closes #21)
 
 ### 🐛 Bug Fixes
 
