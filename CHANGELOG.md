@@ -17,6 +17,7 @@ All notable changes to this project will be documented in this file.
 
 - Deduplicate and rename the extension log prefix (closes #13)
 - Per-writer tmp name in writeAliasCache (closes #19)
+- Skip backoff during the first full model pass (closes #23)
 
 
 ## [0.2.0] - 2026-09-07
