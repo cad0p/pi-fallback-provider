@@ -371,6 +371,9 @@ describe("fallbackDelayMs", () => {
       2_147_483_648_000,
     );
     expect(fallbackDelayMs({ baseMs: 0.5, maxMs: 1_000 }, 1, 0)).toBe(1_000);
+    expect(fallbackDelayMs({ baseMs: 100_000_000, maxMs: Number.POSITIVE_INFINITY }, 33, 2)).toBe(
+      Number.MAX_SAFE_INTEGER,
+    );
   });
 
   it("ignores non-finite switch counts and does not overflow on huge ones", () => {
