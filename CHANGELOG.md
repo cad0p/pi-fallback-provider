@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [calver-released]
+
+<!-- USER-EDITABLE SECTION START -->
+<!-- Add your curated release notes here. -->
+<!-- USER-EDITABLE SECTION END -->
+
+### 🚀 Features
+
+- Fallback via settle-boundary context edits (closes #14)
+- Banner episode count and paced fallback switches (closes #21)
+
+### 🐛 Bug Fixes
+
+- Deduplicate and rename the extension log prefix (closes #13)
+- Per-writer tmp name in writeAliasCache (closes #19)
+- Skip backoff during the first full model pass (closes #23)
+
+
 ## [0.2.0] - 2026-09-07
 
 <!-- USER-EDITABLE SECTION START -->
