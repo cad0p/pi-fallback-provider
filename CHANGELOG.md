@@ -20,6 +20,10 @@ All notable changes to this project will be documented in this file.
 - Skip backoff during the first full model pass (closes #23)
 - Apply the scoped thinking level after a fallback switch (closes #27)
 
+### 🚜 Refactor
+
+- Typecheck index.ts against pi's types (closes #29)
+
 
 ## [0.2.0] - 2026-09-07
 
