@@ -1,0 +1,6 @@
+# pi's packages are a devDependency here for TYPES only (see tsconfig.json), and
+# they pull @google/genai + protobufjs transitively. Neither needs its install
+# script for typechecking, and the pnpm build gate would fail CI otherwise.
+allowBuilds:
+  '@google/genai': false
+  protobufjs: false

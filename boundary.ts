@@ -16,8 +16,10 @@
  * vitest. `index.ts` wires it into the live extension API.
  */
 
-import { buildModelOrder, indexOfScoped, scopedThinkingLevel } from "./aliases";
-import type { ScopedEntry } from "./aliases";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { ScopedModel } from "@earendil-works/pi-coding-agent";
+
+import { buildModelOrder, indexOfScoped } from "./aliases";
 
 /** Footer status key used for the pre-announce banner. */
 export const STATUS_KEY = "pi-fallback";
@@ -77,7 +79,7 @@ export interface BranchEntryLike {
 /** Structural view of the extension context used by the handlers. */
 export interface BoundaryContextLike {
   sessionManager: { getBranch(): BranchEntryLike[] };
-  scopedModels?: readonly ScopedEntry[];
+  scopedModels?: readonly ScopedModel[];
   model?: { provider: string; id: string } | null;
   modelRegistry: {
     find(provider: string, id: string): { provider: string; id: string } | undefined;
@@ -124,7 +126,7 @@ export interface BoundaryDeps {
    * only `cycleModel()` passes `next.thinkingLevel`. Without this hook a
    * fallback silently drops e.g. `max` back to `defaultThinkingLevel`.
    */
-  setThinkingLevel?(level: string): void;
+  setThinkingLevel?(level: ModelThinkingLevel): void;
   getCursor(): number;
   setCursor(next: number): void;
   debug(...args: unknown[]): void;
@@ -183,7 +185,7 @@ export function isLastModelVisibleErrorEntry(
 
 /** Candidate order computed from already-captured host reads. */
 function candidateOrderFrom(
-  scoped: readonly ScopedEntry[],
+  scoped: readonly ScopedModel[],
   current: { provider: string; id: string } | null | undefined,
   registry: BoundaryContextLike["modelRegistry"],
   cursor: number,
@@ -309,6 +311,8 @@ export function parseDelayMs(raw: string | undefined, fallback: number): number 
 
 /** Env shape for {@link buildDelayPolicy} (a `process.env` subset). */
 export interface DelayEnv {
+  /** Any other env var (e.g. the rest of `process.env`) is ignored. */
+  readonly [name: string]: string | undefined;
   PI_FALLBACK_DELAY_MS?: string | undefined;
   PI_FALLBACK_MAX_DELAY_MS?: string | undefined;
 }
@@ -454,7 +458,7 @@ export function createBoundaryHandler(deps: BoundaryDeps): (
     let draft: ContextEditDraft | undefined;
     let order: Array<{ provider: string; id: string }>;
     let registry: BoundaryContextLike["modelRegistry"];
-    let scoped: readonly ScopedEntry[];
+    let scoped: readonly ScopedModel[];
     let previous: string;
 
     try {
@@ -536,7 +540,7 @@ export function createBoundaryHandler(deps: BoundaryDeps): (
       // The switch has pi resolve the level from the pin / global default; the
       // scoped entry's own level is applied afterwards so a fallback lands on
       // the level the scope asked for (see BoundaryDeps.setThinkingLevel).
-      const level = scopedThinkingLevel(idx >= 0 ? scoped[idx] : undefined);
+      const level = idx >= 0 ? scoped[idx]?.thinkingLevel : undefined;
       if (level) deps.setThinkingLevel?.(level);
       if (idx >= 0) deps.setCursor((idx + 1) % scoped.length);
       deps.episode.switches += 1;

@@ -109,8 +109,7 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
     setModel: (model) => pi.setModel(model as Parameters<ExtensionAPI["setModel"]>[0]),
     // pi applies the pin / global default on setModel and only honours a scoped
     // entry's level in cycleModel(), so re-apply it after a fallback switch.
-    setThinkingLevel: (level) =>
-      pi.setThinkingLevel(level as Parameters<ExtensionAPI["setThinkingLevel"]>[0]),
+    setThinkingLevel: (level) => pi.setThinkingLevel(level),
     getCursor: () => fallbackCursor,
     setCursor: (next) => {
       fallbackCursor = next;
