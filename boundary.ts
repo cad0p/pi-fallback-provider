@@ -16,7 +16,7 @@
  * vitest. `index.ts` wires it into the live extension API.
  */
 
-import { buildModelOrder, indexOfScoped } from "./aliases";
+import { buildModelOrder, indexOfScoped, scopedThinkingLevel } from "./aliases";
 import type { ScopedEntry } from "./aliases";
 
 /** Footer status key used for the pre-announce banner. */
@@ -116,6 +116,15 @@ export interface FallbackDelayPolicy {
 /** Side effects the boundary handler needs from the extension host. */
 export interface BoundaryDeps {
   setModel(model: { provider: string; id: string }): Promise<boolean>;
+  /**
+   * Apply the switched-to scoped entry's thinking level.
+   *
+   * pi's `setModel` resolves the level from the per-model pin / global default
+   * and ignores the scoped entry (`_getThinkingLevelForModelSwitch(model)`);
+   * only `cycleModel()` passes `next.thinkingLevel`. Without this hook a
+   * fallback silently drops e.g. `max` back to `defaultThinkingLevel`.
+   */
+  setThinkingLevel?(level: string): void;
   getCursor(): number;
   setCursor(next: number): void;
   debug(...args: unknown[]): void;
@@ -524,6 +533,11 @@ export function createBoundaryHandler(deps: BoundaryDeps): (
       }
 
       const idx = indexOfScoped(scoped, candidate.provider, candidate.id);
+      // The switch has pi resolve the level from the pin / global default; the
+      // scoped entry's own level is applied afterwards so a fallback lands on
+      // the level the scope asked for (see BoundaryDeps.setThinkingLevel).
+      const level = scopedThinkingLevel(idx >= 0 ? scoped[idx] : undefined);
+      if (level) deps.setThinkingLevel?.(level);
       if (idx >= 0) deps.setCursor((idx + 1) % scoped.length);
       deps.episode.switches += 1;
       deps.debug(`switched model ${previous} → ${key}`);

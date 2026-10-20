@@ -737,6 +737,72 @@ describe("resetEpisodeStatus", () => {
   });
 });
 
+describe("createBoundaryHandler — scoped thinking level", () => {
+  /** Scoped entries with optional explicit levels, current model first. */
+  function scopedWithLevels(levels: Array<string | undefined>): ScopedEntry[] {
+    return levels.map((thinkingLevel, index) => ({
+      model: { provider: String.fromCharCode(97 + index), id: `m${index + 1}` },
+      ...(thinkingLevel ? { thinkingLevel } : {}),
+    }));
+  }
+
+  function errorContext(levels: Array<string | undefined>): BoundaryContextLike {
+    return makeContext({
+      branch: [branchMessage("e1", "error")],
+      scopedModels: scopedWithLevels(levels),
+      available: levels.map((_, index) => `${String.fromCharCode(97 + index)}/m${index + 1}`),
+    });
+  }
+
+  it("applies the switched-to entry's level after setModel", async () => {
+    const calls: string[] = [];
+    const deps = makeDeps({
+      setModel: vi.fn(async () => {
+        calls.push("setModel");
+        return true;
+      }),
+      setThinkingLevel: vi.fn((level: string) => {
+        calls.push(`setThinkingLevel:${level}`);
+      }),
+    });
+
+    const result = await createBoundaryHandler(deps)(
+      makeEvent({ context: { contextEntries: [tailError("e1")], canContinue: false } }),
+      errorContext([undefined, "max"]),
+    );
+
+    expect(result?.continue).toBe(true);
+    expect(deps.setThinkingLevel).toHaveBeenCalledWith("max");
+    // pi's setModel runs first, so the level is not overwritten by it.
+    expect(calls).toEqual(["setModel", "setThinkingLevel:max"]);
+  });
+
+  it("leaves the level alone when the entry has none", async () => {
+    const deps = makeDeps({ setThinkingLevel: vi.fn() });
+
+    await createBoundaryHandler(deps)(
+      makeEvent({ context: { contextEntries: [tailError("e1")], canContinue: false } }),
+      errorContext([undefined, undefined]),
+    );
+
+    expect(deps.setThinkingLevel).not.toHaveBeenCalled();
+  });
+
+  it("does not apply a level for a candidate that could not switch", async () => {
+    const deps = makeDeps({
+      setModel: vi.fn(async () => false),
+      setThinkingLevel: vi.fn(),
+    });
+
+    await createBoundaryHandler(deps)(
+      makeEvent({ context: { contextEntries: [tailError("e1")], canContinue: false } }),
+      errorContext([undefined, "max"]),
+    );
+
+    expect(deps.setThinkingLevel).not.toHaveBeenCalled();
+  });
+});
+
 describe("createBoundaryHandler — inter-attempt delay", () => {
   it("switches immediately on the first fallback switch", async () => {
     const deps = makeDeps({ sleep: vi.fn(async () => {}) });
