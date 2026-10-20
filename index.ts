@@ -107,6 +107,10 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
     // The handler passes the live registry object it obtained from
     // `ctx.modelRegistry.find`, so this cast keeps pi's full Model instance.
     setModel: (model) => pi.setModel(model as Parameters<ExtensionAPI["setModel"]>[0]),
+    // pi applies the pin / global default on setModel and only honours a scoped
+    // entry's level in cycleModel(), so re-apply it after a fallback switch.
+    setThinkingLevel: (level) =>
+      pi.setThinkingLevel(level as Parameters<ExtensionAPI["setThinkingLevel"]>[0]),
     getCursor: () => fallbackCursor,
     setCursor: (next) => {
       fallbackCursor = next;

@@ -580,6 +580,17 @@ export interface ScopedEntry {
   thinkingLevel?: unknown;
 }
 
+/**
+ * The scoped entry's explicit thinking level, when pi recorded one.
+ *
+ * pi types the field as `ModelThinkingLevel`; this structural view widens it to
+ * `unknown`, so narrow it once here instead of at every call site.
+ */
+export function scopedThinkingLevel(entry: ScopedEntry | undefined): string | undefined {
+  const level = entry?.thinkingLevel;
+  return typeof level === "string" && level.length > 0 ? level : undefined;
+}
+
 /** Split a "provider/id" string (id may contain slashes). */
 export function parseModelEntry(s: string): { provider: string; id: string } {
   const slash = s.indexOf("/");
