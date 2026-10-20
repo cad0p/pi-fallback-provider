@@ -16,6 +16,8 @@ import { randomBytes } from "node:crypto";
 import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import type { ScopedModel } from "@earendil-works/pi-coding-agent";
+
 // ---------------------------------------------------------------------------
 // §2. Sibling-slot parser + grouping (pure)
 // ---------------------------------------------------------------------------
@@ -574,23 +576,6 @@ export function syncAliases(deps: SyncAliasesDeps): SyncAliasesResult {
 // §8. Cycle ordering over live ctx.scopedModels (pure)
 // ---------------------------------------------------------------------------
 
-/** Minimal structural view of pi's ScopedModel (`{ model, thinkingLevel? }`). */
-export interface ScopedEntry {
-  model: { provider: string; id: string };
-  thinkingLevel?: unknown;
-}
-
-/**
- * The scoped entry's explicit thinking level, when pi recorded one.
- *
- * pi types the field as `ModelThinkingLevel`; this structural view widens it to
- * `unknown`, so narrow it once here instead of at every call site.
- */
-export function scopedThinkingLevel(entry: ScopedEntry | undefined): string | undefined {
-  const level = entry?.thinkingLevel;
-  return typeof level === "string" && level.length > 0 ? level : undefined;
-}
-
 /** Split a "provider/id" string (id may contain slashes). */
 export function parseModelEntry(s: string): { provider: string; id: string } {
   const slash = s.indexOf("/");
@@ -603,7 +588,7 @@ export function parseModelEntry(s: string): { provider: string; id: string } {
  * cursor, skipping the current model. Empty scope → no candidates.
  */
 export function buildModelOrder(
-  scoped: ReadonlyArray<ScopedEntry>,
+  scoped: ReadonlyArray<ScopedModel>,
   currentProvider: string,
   currentId: string,
   cursor: number,
@@ -621,7 +606,7 @@ export function buildModelOrder(
 
 /** Index of a provider/id in the live scope (-1 when absent). */
 export function indexOfScoped(
-  scoped: ReadonlyArray<ScopedEntry>,
+  scoped: ReadonlyArray<ScopedModel>,
   provider: string,
   id: string,
 ): number {

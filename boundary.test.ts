@@ -38,17 +38,16 @@ import type {
   FallbackDelayPolicy,
   ProjectedEntryLike,
 } from "./boundary";
-import type { ScopedEntry } from "./aliases";
+import type { ScopedModel } from "@earendil-works/pi-coding-agent";
+
+import { scopedEntries, scopedEntry } from "./test-fakes";
 
 // ---------------------------------------------------------------------------
 // Fakes
 // ---------------------------------------------------------------------------
 
-function scoped(ids: string[]): ScopedEntry[] {
-  return ids.map((id) => {
-    const slash = id.indexOf("/");
-    return { model: { provider: id.slice(0, slash), id: id.slice(slash + 1) } };
-  });
+function scoped(ids: string[]): ScopedModel[] {
+  return scopedEntries(ids);
 }
 
 function branchMessage(
@@ -81,7 +80,7 @@ function projected(id: string, role: string, stopReason?: string): ProjectedEntr
 function makeContext(
   options: {
     branch?: BranchEntryLike[];
-    scopedModels?: ScopedEntry[];
+    scopedModels?: ScopedModel[];
     available?: string[];
     model?: { provider: string; id: string } | null;
     hasUI?: boolean;
@@ -739,11 +738,13 @@ describe("resetEpisodeStatus", () => {
 
 describe("createBoundaryHandler — scoped thinking level", () => {
   /** Scoped entries with optional explicit levels, current model first. */
-  function scopedWithLevels(levels: Array<string | undefined>): ScopedEntry[] {
-    return levels.map((thinkingLevel, index) => ({
-      model: { provider: String.fromCharCode(97 + index), id: `m${index + 1}` },
-      ...(thinkingLevel ? { thinkingLevel } : {}),
-    }));
+  function scopedWithLevels(levels: Array<string | undefined>): ScopedModel[] {
+    return levels.map((thinkingLevel, index) =>
+      scopedEntry(
+        `${String.fromCharCode(97 + index)}/m${index + 1}`,
+        thinkingLevel as Parameters<typeof scopedEntry>[1],
+      ),
+    );
   }
 
   function errorContext(levels: Array<string | undefined>): BoundaryContextLike {

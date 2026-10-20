@@ -8,10 +8,8 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  // NOTE: index.ts is intentionally excluded — its pi imports
-  // (@earendil-works/pi-*) resolve at runtime via pi's extension loader,
-  // and this package carries no pi dev-dependency by design. Only the
-  // framework-free modules (aliases.ts, boundary.ts) and their tests are
-  // typechecked.
-  "include": ["aliases.ts", "boundary.ts", "*.test.ts", "vitest.config.mts"]
+  // pi (@earendil-works/pi-*) is a DEV-only dependency: it provides the types
+  // index.ts is written against and is resolved by pi's extension loader at
+  // runtime, so it never ships. Every source file is typechecked.
+  "include": ["index.ts", "aliases.ts", "boundary.ts", "*.test.ts", "vitest.config.mts"]
 }

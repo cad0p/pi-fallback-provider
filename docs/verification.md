@@ -57,10 +57,10 @@ review their own work):
    single-character drift, added/removed punctuation must fail), probe
    boundary cases and off-by-one ranges, `null`/`undefined` returns, throw
    paths, `hasUI` gating, and copy drift against pinned strings/constants.
-3. **Pi-API lens** — for changes touching pi APIs: structural types and
-   runtime semantics must match the installed pi version's `dist` sources
-   (this package carries no pi dev-dependency, so local types can lag the
-   host `pi`).
+3. **Pi-API lens** — for changes touching pi APIs: runtime semantics must
+   match the installed pi version's `dist` sources, and the pinned
+   `@earendil-works/*` devDependency must be bumped in the same PR when a
+   type it declares changes shape (see § Offline gates).
 
 Rules:
 
@@ -90,10 +90,15 @@ Notes:
 
 - Node ≥22.19.0 (`package.json` `engines`); CI uses Node 22.19 with pnpm 11
   and `--frozen-lockfile`.
-- `tsconfig.json` intentionally excludes `index.ts`: its `@earendil-works/*`
-  imports resolve at runtime through pi's extension loader and this package
-  carries no pi dev-dependency by design. The framework-free modules
-  (`aliases.ts`, `boundary.ts`) and all `*.test.ts` are typechecked.
+- `@earendil-works/pi-ai` and `@earendil-works/pi-coding-agent` are
+  **dev-only** dependencies, pinned exactly to the pi release the extension is
+  written against: they supply the types every source file is typechecked
+  against (`index.ts` included — it is no longer excluded) and are resolved by
+  pi's extension loader at runtime, so they never ship. Bump both in the same
+  PR as any code that depends on the new type shape.
+- `pnpm-workspace.yaml` sets `allowBuilds: false` for `@google/genai` and
+  `protobufjs`: pi's transitive tree ships install scripts this package never
+  runs, and the pnpm build gate would otherwise fail CI (`ERR_PNPM_IGNORED_BUILDS`).
 - Scope discipline: a feature PR must not edit `CHANGELOG.md` or the
   `package.json` `version` (release policy); release PRs own them.
 

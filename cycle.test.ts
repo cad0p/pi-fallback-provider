@@ -2,14 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { buildModelOrder, indexOfScoped, parseModelEntry } from "./aliases";
-import type { ScopedEntry } from "./aliases";
-
-function scope(ids: string[]): ScopedEntry[] {
-  return ids.map((id) => {
-    const slash = id.indexOf("/");
-    return { model: { provider: id.slice(0, slash), id: id.slice(slash + 1) } };
-  });
-}
+import { scopedEntries as scope } from "./test-fakes";
 
 describe("parseModelEntry", () => {
   it("splits provider/id and tolerates slashes in the id", () => {
