@@ -82,6 +82,18 @@ describe("boundary wiring regression", () => {
     expect(shutdownBody).toContain("resetEpisodeStatus(ctx, episode, debug)");
   });
 
+  it("keeps the round-robin cursor per session (inside the factory), never module-level", () => {
+    const source = readFileSync("index.ts", "utf-8");
+    const factoryStart = source.indexOf("export default function piFallbackProvider(");
+    expect(factoryStart).toBeGreaterThan(-1);
+    const declaration = source.indexOf("let fallbackCursor = 0;");
+    // Exactly one declaration, and it sits inside the factory body: pi calls the factory once
+    // per session (in-process child sessions included), so state declared there is per session.
+    expect(declaration).toBeGreaterThan(factoryStart);
+    expect(source.indexOf("let fallbackCursor", declaration + 1)).toBe(-1);
+    expect(source.slice(0, factoryStart)).not.toMatch(/\b(let|var|const)\s+fallbackCursor\b/);
+  });
+
   it("shares one episode state between the banner and the boundary delay", () => {
     const source = readFileSync("index.ts", "utf-8");
     expect(source).toContain("const episode = createEpisodeState();");

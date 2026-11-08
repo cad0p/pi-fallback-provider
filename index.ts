@@ -65,18 +65,18 @@ const log = {
 };
 
 // ---------------------------------------------------------------------------
-// State
-// ---------------------------------------------------------------------------
-
-/** Position cursor in the scoped-models array for round-robin. */
-let fallbackCursor = 0;
-
-// ---------------------------------------------------------------------------
 // Extension
 // ---------------------------------------------------------------------------
 
 export default function piFallbackProvider(pi: ExtensionAPI) {
   log.debug("Loading extension");
+
+  // Per-session state. pi caches this module but calls the factory once per session: at
+  // startup, on /new, /resume, /fork and /reload, and for every in-process child session
+  // (pi-subagents). A module-level cursor was shared by all of them, so concurrent
+  // sessions advanced each other's round-robin.
+  /** Position cursor in this session's scoped-models array for round-robin. */
+  let fallbackCursor = 0;
 
   // Phase 1 (multi-account): register alias providers from the MODELS-ONLY
   // cache file. Graceful when absent (first run heals on session_start).
