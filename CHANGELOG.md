@@ -19,6 +19,7 @@ All notable changes to this project will be documented in this file.
 - Per-writer tmp name in writeAliasCache (closes #19)
 - Skip backoff during the first full model pass (closes #23)
 - Apply the scoped thinking level after a fallback switch (closes #27)
+- Keep the round-robin cursor per session (closes #31)
 
 ### 🚜 Refactor
 
