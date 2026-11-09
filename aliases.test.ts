@@ -89,6 +89,7 @@ function fauxCatalog(): CloneSourceModel[] {
       samplingParams: { temperature: 0.7 },
       compat: { foo: "bar" },
       promptCache: { short: 300, long: 3600 },
+      inputLimits: { maxRequestBytes: 33554432, images: { maxPerRequest: 600, resize: { maxWidth: 2000 } } },
       provider: "opencode",
       headers: { "x-secret": "drop-me" },
     },
@@ -127,6 +128,7 @@ describe("buildAliasConfig", () => {
       samplingParams: { temperature: 0.7 },
       compat: { foo: "bar" },
       promptCache: { short: 300, long: 3600 },
+      inputLimits: { maxRequestBytes: 33554432, images: { maxPerRequest: 600, resize: { maxWidth: 2000 } } },
     });
     expect(config.models![1]).toEqual({
       id: "model-b",
@@ -154,7 +156,7 @@ describe("buildAliasConfig", () => {
     expect(JSON.stringify(config)).not.toContain("apiKey");
   });
 
-  it("deep-copies input/cost/samplingParams/compat/promptCache (mutating the clone spares the base)", () => {
+  it("deep-copies input/cost/samplingParams/compat/promptCache/inputLimits (mutating the clone spares the base)", () => {
     const base = fauxCatalog();
     const config = buildAliasConfig("opencode-2", "opencode", base);
     const clone = config.models![0];
@@ -163,18 +165,36 @@ describe("buildAliasConfig", () => {
     (clone.samplingParams as Record<string, unknown>).temperature = 0;
     (clone.compat as Record<string, unknown>).foo = "mutated";
     (clone.promptCache as Record<string, number>).short = 1;
+    ((clone.inputLimits as Record<string, unknown>).images as Record<string, unknown>).maxPerRequest = 1;
     expect(base[0].input).toEqual(["text", "image"]);
     expect(base[0].cost.input).toBe(1);
     expect(base[0].samplingParams).toEqual({ temperature: 0.7 });
     expect(base[0].compat).toEqual({ foo: "bar" });
     expect(base[0].promptCache).toEqual({ short: 300, long: 3600 });
+    expect(base[0].inputLimits).toEqual({
+      maxRequestBytes: 33554432,
+      images: { maxPerRequest: 600, resize: { maxWidth: 2000 } },
+    });
   });
 
-  it("shallow-copies thinkingLevelMap (top level decoupled)", () => {
+  it("deep-copies thinkingLevelMap (spread clone decouples nested values)", () => {
     const base = fauxCatalog();
     const config = buildAliasConfig("opencode-2", "opencode", base);
     expect(config.models![0].thinkingLevelMap).toEqual(base[0].thinkingLevelMap);
     expect(config.models![0].thinkingLevelMap).not.toBe(base[0].thinkingLevelMap);
+    expect(
+      (config.models![0].thinkingLevelMap as Record<string, unknown>).high,
+    ).not.toBe((base[0].thinkingLevelMap as Record<string, unknown>).high);
+  });
+
+  it("inherits fields pi adds later and drops only the deny set (spread-and-delete)", () => {
+    const base = fauxCatalog();
+    (base[0] as Record<string, unknown>).someFutureField = { nested: true };
+    const config = buildAliasConfig("opencode-2", "opencode", base);
+    const clone = config.models![0] as Record<string, unknown>;
+    expect(clone.someFutureField).toEqual({ nested: true });
+    expect("provider" in clone).toBe(false);
+    expect("headers" in clone).toBe(false);
   });
 
   it("omits top-level api when base models disagree", () => {
@@ -303,6 +323,7 @@ describe("alias model cache", () => {
           samplingParams: { temperature: 0.5 },
           compat: { foo: "bar" },
           promptCache: { short: 300, long: 3600 },
+          inputLimits: { maxRequestBytes: 33554432 },
         },
       ],
     };
@@ -316,6 +337,7 @@ describe("alias model cache", () => {
     expect(back["opencode-2"].models[0].samplingParams).toEqual({ temperature: 0.5 });
     expect(back["opencode-2"].models[0].compat).toEqual({ foo: "bar" });
     expect(back["opencode-2"].models[0].promptCache).toEqual({ short: 300, long: 3600 });
+    expect(back["opencode-2"].models[0].inputLimits).toEqual({ maxRequestBytes: 33554432 });
   });
 
   it("returns empty silently when the cache is missing", () => {
@@ -345,13 +367,20 @@ describe("alias model cache", () => {
       ...tainted.models[0],
       apiKey: "sk-should-never-persist",
       provider: "opencode",
+      headers: { "x-secret": "drop-me" },
+      oauth: { token: "drop-me" },
     };
     writeAliasCache(dir, { "opencode-2": tainted as unknown as ReturnType<typeof cacheEntry> });
     const raw = readFileSync(join(dir, "pi-fallback-alias-models.json"), "utf-8");
     expect(raw).not.toContain("apiKey");
     expect(raw).not.toContain("sk-should-never-persist");
-    const back = readAliasCache(dir);
-    expect("apiKey" in (back["opencode-2"].models[0] as unknown as Record<string, unknown>)).toBe(false);
+    expect(raw).not.toContain('"headers"');
+    expect(raw).not.toContain('"oauth"');
+    const backModel = readAliasCache(dir)["opencode-2"].models[0] as unknown as Record<string, unknown>;
+    expect("apiKey" in backModel).toBe(false);
+    expect("provider" in backModel).toBe(false);
+    expect("headers" in backModel).toBe(false);
+    expect("oauth" in backModel).toBe(false);
   });
 });
 
@@ -371,6 +400,8 @@ describe("registerCachedAliases (Phase 1)", () => {
           cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
           contextWindow: 100000,
           maxTokens: 8192,
+          promptCache: { short: 300, long: 3600 },
+          inputLimits: { maxRequestBytes: 33554432 },
         },
       ],
     },
@@ -405,7 +436,10 @@ describe("registerCachedAliases (Phase 1)", () => {
     expect(t.registered).toHaveLength(1);
     const config = t.registered[0].config as Record<string, unknown>;
     expect(config.name).toBe("opencode (2)");
-    expect((config.models as unknown[])).toHaveLength(1);
+    const models = config.models as Array<Record<string, unknown>>;
+    expect(models).toHaveLength(1);
+    expect(models[0].promptCache).toEqual({ short: 300, long: 3600 });
+    expect(models[0].inputLimits).toEqual({ maxRequestBytes: 33554432 });
     expect(t.warnings).toEqual([]);
   });
 
@@ -445,6 +479,7 @@ describe("syncAliases (Phase 2)", () => {
       contextWindow: 100000,
       maxTokens: 8192,
       promptCache: { short: 300, long: 3600 },
+      inputLimits: { maxRequestBytes: 33554432 },
     },
   ];
 
@@ -483,6 +518,7 @@ describe("syncAliases (Phase 2)", () => {
     expect(config.name).toBe("opencode (2)");
     expect(config.models).toHaveLength(1);
     expect(config.models[0].promptCache).toEqual({ short: 300, long: 3600 });
+    expect(config.models[0].inputLimits).toEqual({ maxRequestBytes: 33554432 });
     expect(JSON.stringify(t.registered)).not.toContain("apiKey");
     expect(Object.keys(t.written ?? {}).sort()).toEqual(["opencode-2", "opencode-2-work"]);
     expect(t.warnings).toEqual([]);

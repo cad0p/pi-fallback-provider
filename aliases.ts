@@ -87,11 +87,21 @@ export interface CloneSourceModel {
   samplingParams?: Record<string, unknown>;
   compat?: Record<string, unknown>;
   promptCache?: ModelPromptCache;
-  // Tolerate live-registry extras (provider, headers, ...) — never cloned.
+  // Every other live-registry field (inputLimits, samplingParamsByThinkingLevel,
+  // type, ...) rides the index signature: buildAliasConfig clones it unless it
+  // is in the deny set below. Only list a field here when the clone source or
+  // the cache reader needs it typed.
   [key: string]: unknown;
 }
 
-/** Per-model config for an alias provider registration / cache entry. */
+/**
+ * Per-model config for an alias provider registration / cache entry.
+ *
+ * An open record: every field pi adds to a model rides the index signature
+ * into the clone (see `buildAliasConfig`), so this stays minimal. Fields the
+ * clone source or the cache reader need typed are declared here; everything
+ * else is `unknown` and passes through `deepClone`.
+ */
 export interface AliasModelDef {
   id: string;
   name: string;
@@ -106,6 +116,7 @@ export interface AliasModelDef {
   samplingParams?: Record<string, unknown>;
   compat?: Record<string, unknown>;
   promptCache?: ModelPromptCache;
+  [key: string]: unknown;
 }
 
 /** Provider-level config built for `pi.registerProvider(aliasId, config)`. */
@@ -129,11 +140,6 @@ function deepClone<T>(value: T): T {
   return value;
 }
 
-function shallowClone(value: unknown): unknown {
-  if (value !== null && typeof value === "object" && !Array.isArray(value)) return { ...value };
-  return value;
-}
-
 /** Provider display name for an alias slot: `"<base> (<account>)"`. */
 export function aliasDisplayName(base: string, account: string): string {
   return `${base} (${account})`;
@@ -150,12 +156,15 @@ function uniformApi(models: Array<{ api?: string }>): string | undefined {
 /**
  * Build an alias provider config by per-model cloning the base catalog.
  *
- * Clones exactly: id, name, api, baseUrl, reasoning, input, cost,
- * contextWindow, maxTokens, thinkingLevelMap, samplingParams, compat,
- * promptCache.
- * NEVER sets `apiKey` (alias auth resolves from the alias's own auth.json
- * slot), `streamSimple`, or `oauth`. Per-model `headers` are dropped — pi's
- * provider composition forces extension per-model headers to `undefined`.
+ * Clones EVERY field the live model carries (spread-and-delete), so fields pi
+ * adds later — inputLimits (pi#9631), samplingParamsByThinkingLevel (pi#9776),
+ * and whatever follows — reach aliases with no edit here. A hand-written
+ * allowlist silently dropped promptCache (pi#9668) and inputLimits (pi#9631)
+ * for as long as they existed, because nothing linked it to pi's schema.
+ * Deleted: `provider` (pi's composer sets it to the alias id) and `headers`
+ * (pi forces extension per-model headers to `undefined`). NEVER sets
+ * `apiKey` (alias auth resolves from the alias's own auth.json slot),
+ * `streamSimple`, or `oauth`.
  *
  * NOTE on `samplingParams`: pi's public `ProviderModelConfig` type omits it
  * while the runtime `ProviderConfigInput.models[]` accepts it
@@ -169,21 +178,9 @@ export function buildAliasConfig(
 ): AliasProviderConfig {
   const account = opts?.label ?? parseAliasId(aliasId)?.account ?? aliasId;
   const models: AliasModelDef[] = baseModels.map((m) => {
-    const def: AliasModelDef = {
-      id: m.id,
-      name: m.name,
-      reasoning: m.reasoning,
-      input: [...m.input],
-      cost: deepClone(m.cost),
-      contextWindow: m.contextWindow,
-      maxTokens: m.maxTokens,
-    };
-    if (m.api !== undefined) def.api = m.api;
-    if (m.baseUrl !== undefined) def.baseUrl = m.baseUrl;
-    if (m.thinkingLevelMap !== undefined) def.thinkingLevelMap = shallowClone(m.thinkingLevelMap);
-    if (m.samplingParams !== undefined) def.samplingParams = deepClone(m.samplingParams);
-    if (m.compat !== undefined) def.compat = deepClone(m.compat);
-    if (m.promptCache !== undefined) def.promptCache = deepClone(m.promptCache);
+    const def = deepClone(m) as AliasModelDef & Record<string, unknown>;
+    delete def.provider; // pi's composer sets provider to the alias id
+    delete def.headers; // pi forces extension per-model headers to undefined
     return def;
   });
   const config: AliasProviderConfig = {
@@ -304,23 +301,21 @@ export function cachePath(agentDir: string): string {
   return join(agentDir, ALIAS_CACHE_FILENAME);
 }
 
-/** Rebuild one cached model through the known-field whitelist. */
+/** Fields that must never reach the alias cache file. */
+const CACHE_DENYLIST = ["provider", "headers", "apiKey", "oauth", "streamSimple"] as const;
+
+/**
+ * Rebuild one cached model for the file: spread-and-delete, mirroring
+ * `buildAliasConfig`. Keeping every model field (not an allowlist) means a
+ * field pi adds later reaches the Phase-1 registration from the cache with no
+ * edit here; the denylist keeps pi-managed and credential-bearing fields off
+ * disk. `apiKey`/`oauth`/`streamSimple` are never on a registry model —
+ * they are dropped as defence in depth against a caller passing a provider
+ * config or a model with injected fields.
+ */
 function sanitizeModel(model: AliasModelDef): AliasModelDef {
-  const out: AliasModelDef = {
-    id: model.id,
-    name: model.name,
-    reasoning: model.reasoning,
-    input: [...model.input],
-    cost: deepClone(model.cost),
-    contextWindow: model.contextWindow,
-    maxTokens: model.maxTokens,
-  };
-  if (model.api !== undefined) out.api = model.api;
-  if (model.baseUrl !== undefined) out.baseUrl = model.baseUrl;
-  if (model.thinkingLevelMap !== undefined) out.thinkingLevelMap = deepClone(model.thinkingLevelMap);
-  if (model.samplingParams !== undefined) out.samplingParams = deepClone(model.samplingParams);
-  if (model.compat !== undefined) out.compat = deepClone(model.compat);
-  if (model.promptCache !== undefined) out.promptCache = deepClone(model.promptCache);
+  const out = deepClone(model) as AliasModelDef & Record<string, unknown>;
+  for (const key of CACHE_DENYLIST) delete out[key];
   return out;
 }
 
