@@ -88,6 +88,7 @@ function fauxCatalog(): CloneSourceModel[] {
       maxTokens: 16384,
       samplingParams: { temperature: 0.7 },
       compat: { foo: "bar" },
+      promptCache: { short: 300, long: 3600 },
       provider: "opencode",
       headers: { "x-secret": "drop-me" },
     },
@@ -125,6 +126,7 @@ describe("buildAliasConfig", () => {
       maxTokens: 16384,
       samplingParams: { temperature: 0.7 },
       compat: { foo: "bar" },
+      promptCache: { short: 300, long: 3600 },
     });
     expect(config.models![1]).toEqual({
       id: "model-b",
@@ -152,7 +154,7 @@ describe("buildAliasConfig", () => {
     expect(JSON.stringify(config)).not.toContain("apiKey");
   });
 
-  it("deep-copies input/cost/samplingParams/compat (mutating the clone spares the base)", () => {
+  it("deep-copies input/cost/samplingParams/compat/promptCache (mutating the clone spares the base)", () => {
     const base = fauxCatalog();
     const config = buildAliasConfig("opencode-2", "opencode", base);
     const clone = config.models![0];
@@ -160,10 +162,12 @@ describe("buildAliasConfig", () => {
     (clone.cost as Record<string, unknown>).input = 999;
     (clone.samplingParams as Record<string, unknown>).temperature = 0;
     (clone.compat as Record<string, unknown>).foo = "mutated";
+    (clone.promptCache as Record<string, number>).short = 1;
     expect(base[0].input).toEqual(["text", "image"]);
     expect(base[0].cost.input).toBe(1);
     expect(base[0].samplingParams).toEqual({ temperature: 0.7 });
     expect(base[0].compat).toEqual({ foo: "bar" });
+    expect(base[0].promptCache).toEqual({ short: 300, long: 3600 });
   });
 
   it("shallow-copies thinkingLevelMap (top level decoupled)", () => {
@@ -298,18 +302,20 @@ describe("alias model cache", () => {
           maxTokens: 8192,
           samplingParams: { temperature: 0.5 },
           compat: { foo: "bar" },
+          promptCache: { short: 300, long: 3600 },
         },
       ],
     };
   }
 
-  it("round-trips models by value (samplingParams/compat survive)", () => {
+  it("round-trips models by value (samplingParams/compat/promptCache survive)", () => {
     const dir = tmpAgentDir();
     writeAliasCache(dir, { "opencode-2": cacheEntry() }, { now: () => "2026-09-04T00:00:00.000Z" });
     const back = readAliasCache(dir);
     expect(back["opencode-2"]).toEqual(cacheEntry());
     expect(back["opencode-2"].models[0].samplingParams).toEqual({ temperature: 0.5 });
     expect(back["opencode-2"].models[0].compat).toEqual({ foo: "bar" });
+    expect(back["opencode-2"].models[0].promptCache).toEqual({ short: 300, long: 3600 });
   });
 
   it("returns empty silently when the cache is missing", () => {
@@ -438,6 +444,7 @@ describe("syncAliases (Phase 2)", () => {
       cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 100000,
       maxTokens: 8192,
+      promptCache: { short: 300, long: 3600 },
     },
   ];
 
@@ -472,9 +479,10 @@ describe("syncAliases (Phase 2)", () => {
     const result = syncAliases(t.deps);
     expect(result).toEqual({ registered: ["opencode-2", "opencode-2-work"], skipped: [], aborted: false });
     expect(t.registered.map((r) => r.aliasId)).toEqual(["opencode-2", "opencode-2-work"]);
-    const config = t.registered[0].config as { name: string; models: unknown[] };
+    const config = t.registered[0].config as { name: string; models: Array<Record<string, unknown>> };
     expect(config.name).toBe("opencode (2)");
     expect(config.models).toHaveLength(1);
+    expect(config.models[0].promptCache).toEqual({ short: 300, long: 3600 });
     expect(JSON.stringify(t.registered)).not.toContain("apiKey");
     expect(Object.keys(t.written ?? {}).sort()).toEqual(["opencode-2", "opencode-2-work"]);
     expect(t.warnings).toEqual([]);

@@ -16,6 +16,7 @@ import { randomBytes } from "node:crypto";
 import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import type { ModelPromptCache } from "@earendil-works/pi-ai";
 import type { ScopedModel } from "@earendil-works/pi-coding-agent";
 
 // ---------------------------------------------------------------------------
@@ -85,6 +86,7 @@ export interface CloneSourceModel {
   maxTokens: number;
   samplingParams?: Record<string, unknown>;
   compat?: Record<string, unknown>;
+  promptCache?: ModelPromptCache;
   // Tolerate live-registry extras (provider, headers, ...) — never cloned.
   [key: string]: unknown;
 }
@@ -103,6 +105,7 @@ export interface AliasModelDef {
   maxTokens: number;
   samplingParams?: Record<string, unknown>;
   compat?: Record<string, unknown>;
+  promptCache?: ModelPromptCache;
 }
 
 /** Provider-level config built for `pi.registerProvider(aliasId, config)`. */
@@ -148,7 +151,8 @@ function uniformApi(models: Array<{ api?: string }>): string | undefined {
  * Build an alias provider config by per-model cloning the base catalog.
  *
  * Clones exactly: id, name, api, baseUrl, reasoning, input, cost,
- * contextWindow, maxTokens, thinkingLevelMap, samplingParams, compat.
+ * contextWindow, maxTokens, thinkingLevelMap, samplingParams, compat,
+ * promptCache.
  * NEVER sets `apiKey` (alias auth resolves from the alias's own auth.json
  * slot), `streamSimple`, or `oauth`. Per-model `headers` are dropped — pi's
  * provider composition forces extension per-model headers to `undefined`.
@@ -179,6 +183,7 @@ export function buildAliasConfig(
     if (m.thinkingLevelMap !== undefined) def.thinkingLevelMap = shallowClone(m.thinkingLevelMap);
     if (m.samplingParams !== undefined) def.samplingParams = deepClone(m.samplingParams);
     if (m.compat !== undefined) def.compat = deepClone(m.compat);
+    if (m.promptCache !== undefined) def.promptCache = deepClone(m.promptCache);
     return def;
   });
   const config: AliasProviderConfig = {
@@ -315,6 +320,7 @@ function sanitizeModel(model: AliasModelDef): AliasModelDef {
   if (model.thinkingLevelMap !== undefined) out.thinkingLevelMap = deepClone(model.thinkingLevelMap);
   if (model.samplingParams !== undefined) out.samplingParams = deepClone(model.samplingParams);
   if (model.compat !== undefined) out.compat = deepClone(model.compat);
+  if (model.promptCache !== undefined) out.promptCache = deepClone(model.promptCache);
   return out;
 }
 
