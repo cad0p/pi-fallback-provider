@@ -182,7 +182,7 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
         const provider = (m as { provider?: unknown }).provider;
         if (typeof provider !== "string") continue;
         const list = byProvider.get(provider) ?? [];
-        list.push(m as unknown as CloneSourceModel);
+        list.push(m);
         byProvider.set(provider, list);
       }
       return syncAliases({

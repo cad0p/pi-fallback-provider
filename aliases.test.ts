@@ -163,9 +163,9 @@ describe("buildAliasConfig", () => {
     // which read the raw JSON.
     const base = fauxCatalog();
     for (const m of base) {
-      (m as Record<string, unknown>).apiKey = "sk-should-never-register";
-      (m as Record<string, unknown>).oauth = { token: "should-never-register" };
-      (m as Record<string, unknown>).streamSimple = () => {};
+      (m as unknown as Record<string, unknown>).apiKey = "sk-should-never-register";
+      (m as unknown as Record<string, unknown>).oauth = { token: "should-never-register" };
+      (m as unknown as Record<string, unknown>).streamSimple = () => {};
     }
     const config = buildAliasConfig("opencode-2", "opencode", base);
     expect("apiKey" in config).toBe(false);
@@ -217,9 +217,9 @@ describe("buildAliasConfig", () => {
 
   it("inherits fields pi adds later and drops only the deny set (spread-and-delete)", () => {
     const base = fauxCatalog();
-    (base[0] as Record<string, unknown>).someFutureField = { nested: true };
+    (base[0] as unknown as Record<string, unknown>).someFutureField = { nested: true };
     const config = buildAliasConfig("opencode-2", "opencode", base);
-    const clone = config.models![0] as Record<string, unknown>;
+    const clone = config.models![0] as unknown as Record<string, unknown>;
     expect(clone.someFutureField).toEqual({ nested: true });
     expect("provider" in clone).toBe(false);
     expect("headers" in clone).toBe(false);
@@ -615,13 +615,16 @@ describe("type derivation from pi's Model<Api>", () => {
     base[0].compat = { foo: "bar" };
     // @ts-expect-error `provider` is omitted from AliasModelDef (pi's composer sets it)
     const alias: AliasModelDef = { ...base[0], provider: "opencode" };
-    // @ts-expect-error the clone source's `input` widening does not extend to AliasModelDef
-    const widenedInput: AliasModelDef = { ...base[0], input: ["anything"] };
-    const { provider: _provider, ...withoutProvider } = base[0];
+    // @ts-expect-error `input` is pi's ModelInputModality[], not an arbitrary string[]
+    const invalidInput: AliasModelDef = { ...base[0], input: ["video", "smell"] };
+    const { provider: _provider, headers: _headers, ...withoutProvider } = base[0];
     // @ts-expect-error CloneSourceModel keeps pi's required `provider`
     const missingProvider: CloneSourceModel = withoutProvider;
+    // @ts-expect-error `headers` is omitted from AliasModelDef alongside `provider`
+    const withHeaders: AliasModelDef = { ...base[0], headers: { "x-a": "1" } };
     expect(alias).toBeDefined();
-    expect(widenedInput).toBeDefined();
+    expect(invalidInput).toBeDefined();
     expect(missingProvider).toBeDefined();
+    expect(withHeaders).toBeDefined();
   });
 });

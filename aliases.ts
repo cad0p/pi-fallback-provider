@@ -73,13 +73,16 @@ export function groupSiblings(authKeys: string[]): Map<string, string[]> {
 // ---------------------------------------------------------------------------
 
 /**
- * Clone source: pi's own `Model<Api>` with one deliberate widening —
- * `input` is `string[]` because our synthetic fixtures carry plain strings
- * (real catalogs carry `ModelInputModality[]`). Every other field is pi's
- * type, so a field pi adds later is typed here automatically; the
- * hand-written mirror of pi's schema is gone.
+ * Clone source: pi's own `Model<Api>`, so a field pi adds later is typed
+ * here automatically; the hand-written mirror of pi's schema is gone.
+ * `provider`/`headers` stay on the source and are deleted by the clone.
+ *
+ * Exact for the source `index.ts` feeds it: `ctx.modelRegistry.getAll()`
+ * is typed `Model<Api>[]` and, per pi's `Models` contract, unqualified
+ * accessors return chat models only (non-chat types live behind
+ * `*OfType`/`getAllModels`), so no cast is needed there.
  */
-export type CloneSourceModel = Omit<Model<Api>, "input"> & { input: string[] };
+export type CloneSourceModel = Model<Api>;
 
 /**
  * Per-model config for an alias provider registration / cache entry.
@@ -87,10 +90,9 @@ export type CloneSourceModel = Omit<Model<Api>, "input"> & { input: string[] };
  * Derived from pi's `Model<Api>` minus `provider` (pi's composer sets it to
  * the alias id) and `headers` (pi forces extension per-model headers to
  * `undefined`). The residual hand-written gap is closed: fields pi adds
- * later are typed here, and the only deliberate widening is the clone
- * source's `input` (see `CloneSourceModel`). The config is structurally
- * assignable to pi's public `ProviderConfig` input type, so `index.ts`
- * registers it without a cast (see the NOTE in `buildAliasConfig`).
+ * later are typed here. The config is structurally assignable to pi's
+ * public `ProviderConfig` input type, so `index.ts` registers it without
+ * a cast (see the NOTE in `buildAliasConfig`).
  */
 export type AliasModelDef = Omit<Model<Api>, "provider" | "headers">;
 
@@ -170,7 +172,7 @@ export function buildAliasConfig(
 ): AliasProviderConfig {
   const account = opts?.label ?? parseAliasId(aliasId)?.account ?? aliasId;
   const models: AliasModelDef[] = baseModels.map((m) => {
-    const def = deepClone(m) as AliasModelDef & Record<string, unknown>;
+    const def = deepClone(m) as unknown as AliasModelDef & Record<string, unknown>;
     for (const key of CLONE_DENYLIST) delete def[key];
     return def;
   });
@@ -300,7 +302,7 @@ export function cachePath(agentDir: string): string {
  * pi-managed and credential-bearing fields off disk.
  */
 function sanitizeModel(model: AliasModelDef): AliasModelDef {
-  const out = deepClone(model) as AliasModelDef & Record<string, unknown>;
+  const out = deepClone(model) as unknown as AliasModelDef & Record<string, unknown>;
   for (const key of CLONE_DENYLIST) delete out[key];
   return out;
 }
