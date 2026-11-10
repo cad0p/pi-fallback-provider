@@ -109,13 +109,13 @@ export interface AliasModelDef {
   baseUrl?: string;
   reasoning: boolean;
   // KNOWN TYPE GAP (accepted, documented): `thinkingLevelMap` stays
-  // `unknown` because pi's catalog and our fixtures carry arbitrary nested
-  // values there; typing it as pi's `ThinkingLevelMap` rejects them. The
-  // index signature is the deliberate residual gap — passthrough fields are
-  // compile-unchecked by design, and `index.ts` bridges the whole config
-  // with a structural cast (see the NOTE in `buildAliasConfig`). Runtime
-  // semantics are covered by the tests; a future field that needs typing
-  // should be declared here.
+  // `unknown` because our synthetic fixture carries an arbitrary nested
+  // value there and pi's `ThinkingLevelMap` rejects it (real catalogs carry
+  // only `string | null`). The index signature is the deliberate residual
+  // gap — passthrough fields are compile-unchecked by design, and `index.ts`
+  // bridges the whole config with a structural cast (see the NOTE in
+  // `buildAliasConfig`). Runtime semantics are covered by the tests; a
+  // future field that needs typing should be declared here.
   thinkingLevelMap?: unknown;
   input: string[];
   cost: { input: number; output: number; cacheRead: number; cacheWrite: number; [k: string]: unknown };
@@ -189,9 +189,12 @@ function uniformApi(models: Array<{ api?: string }>): string | undefined {
  * as defence in depth. Alias auth resolves from the alias's own auth.json
  * slot, so an `apiKey` on the clone would be both wrong and a leak.
  *
- * NOTE on `samplingParams`: pi's public `ProviderModelConfig` type omits it
- * while the runtime `ProviderConfigInput.models[]` accepts it
- * (provider-composer.ts). Callers pass this config through a structural cast.
+ * NOTE on the structural cast: `index.ts` passes this config through
+ * `as unknown as ProviderConfig` because the public `ProviderModelConfig`
+ * type omits passthrough fields the runtime `ProviderConfigInput.models[]`
+ * accepts — `samplingParams`, `inputLimits`,
+ * `samplingParamsByThinkingLevel`, and any field pi adds later. Runtime
+ * semantics are what the tests cover; a new pi field needs no change here.
  */
 export function buildAliasConfig(
   aliasId: string,

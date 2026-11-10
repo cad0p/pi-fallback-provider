@@ -145,8 +145,9 @@ describe("buildAliasConfig", () => {
 
   it("drops the whole deny set from a source that carries it (incl. apiKey/oauth)", () => {
     // The source normally never carries these; inject them so the test is not
-    // vacuous — a drift between buildAliasConfig and sanitizeModel's deny list
-    // must fail here.
+    // vacuous. It pins buildAliasConfig's deny set (the Phase-2 registration
+    // path); sanitizeModel's is pinned separately by the cache-file tests,
+    // which read the raw JSON.
     const base = fauxCatalog();
     for (const m of base) {
       (m as Record<string, unknown>).apiKey = "sk-should-never-register";
