@@ -143,17 +143,30 @@ describe("buildAliasConfig", () => {
     });
   });
 
-  it("never sets apiKey (or streamSimple/oauth), and drops provider/headers extras", () => {
-    const config = buildAliasConfig("opencode-2", "opencode", fauxCatalog());
+  it("drops the whole deny set from a source that carries it (incl. apiKey/oauth)", () => {
+    // The source normally never carries these; inject them so the test is not
+    // vacuous — a drift between buildAliasConfig and sanitizeModel's deny list
+    // must fail here.
+    const base = fauxCatalog();
+    for (const m of base) {
+      (m as Record<string, unknown>).apiKey = "sk-should-never-register";
+      (m as Record<string, unknown>).oauth = { token: "should-never-register" };
+      (m as Record<string, unknown>).streamSimple = () => {};
+    }
+    const config = buildAliasConfig("opencode-2", "opencode", base);
     expect("apiKey" in config).toBe(false);
     expect("streamSimple" in config).toBe(false);
     expect("oauth" in config).toBe(false);
     for (const m of config.models!) {
-      expect("apiKey" in m).toBe(false);
-      expect("provider" in m).toBe(false);
-      expect("headers" in m).toBe(false);
+      const rec = m as unknown as Record<string, unknown>;
+      expect("apiKey" in rec).toBe(false);
+      expect("oauth" in rec).toBe(false);
+      expect("streamSimple" in rec).toBe(false);
+      expect("provider" in rec).toBe(false);
+      expect("headers" in rec).toBe(false);
     }
-    expect(JSON.stringify(config)).not.toContain("apiKey");
+    expect(JSON.stringify(config)).not.toContain("sk-should-never-register");
+    expect(JSON.stringify(config)).not.toContain("should-never-register");
   });
 
   it("deep-copies input/cost/samplingParams/compat/promptCache/inputLimits (mutating the clone spares the base)", () => {

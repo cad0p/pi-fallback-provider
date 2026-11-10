@@ -108,6 +108,14 @@ export interface AliasModelDef {
   api?: string;
   baseUrl?: string;
   reasoning: boolean;
+  // KNOWN TYPE GAP (accepted, documented): `thinkingLevelMap` stays
+  // `unknown` because pi's catalog and our fixtures carry arbitrary nested
+  // values there; typing it as pi's `ThinkingLevelMap` rejects them. The
+  // index signature is the deliberate residual gap — passthrough fields are
+  // compile-unchecked by design, and `index.ts` bridges the whole config
+  // with a structural cast (see the NOTE in `buildAliasConfig`). Runtime
+  // semantics are covered by the tests; a future field that needs typing
+  // should be declared here.
   thinkingLevelMap?: unknown;
   input: string[];
   cost: { input: number; output: number; cacheRead: number; cacheWrite: number; [k: string]: unknown };
@@ -140,6 +148,20 @@ function deepClone<T>(value: T): T {
   return value;
 }
 
+/**
+ * Fields that must never be cloned into an alias model — in the registration
+ * config OR the cache file. `provider` is set by pi's composer to the alias
+ * id; `headers` are forced to `undefined` for extension models. The rest
+ * are credential-bearing or transport-only and are never on a registry model;
+ * they are dropped as defence in depth against a caller passing a provider
+ * config or a model with injected fields.
+ *
+ * ONE list, used by both `buildAliasConfig` and `sanitizeModel`: a second
+ * list that drifted is how the allowlist dropped `promptCache` and
+ * `inputLimits` in the first place.
+ */
+const CLONE_DENYLIST = ["provider", "headers", "apiKey", "oauth", "streamSimple"] as const;
+
 /** Provider display name for an alias slot: `"<base> (<account>)"`. */
 export function aliasDisplayName(base: string, account: string): string {
   return `${base} (${account})`;
@@ -161,10 +183,11 @@ function uniformApi(models: Array<{ api?: string }>): string | undefined {
  * and whatever follows — reach aliases with no edit here. A hand-written
  * allowlist silently dropped promptCache (pi#9668) and inputLimits (pi#9631)
  * for as long as they existed, because nothing linked it to pi's schema.
- * Deleted: `provider` (pi's composer sets it to the alias id) and `headers`
- * (pi forces extension per-model headers to `undefined`). NEVER sets
- * `apiKey` (alias auth resolves from the alias's own auth.json slot),
- * `streamSimple`, or `oauth`.
+ * Deleted: `CLONE_DENYLIST` — `provider` (pi's composer sets it to the
+ * alias id), `headers` (pi forces extension per-model headers to
+ * `undefined`), and the credential-bearing `apiKey`/`oauth`/`streamSimple`
+ * as defence in depth. Alias auth resolves from the alias's own auth.json
+ * slot, so an `apiKey` on the clone would be both wrong and a leak.
  *
  * NOTE on `samplingParams`: pi's public `ProviderModelConfig` type omits it
  * while the runtime `ProviderConfigInput.models[]` accepts it
@@ -179,8 +202,7 @@ export function buildAliasConfig(
   const account = opts?.label ?? parseAliasId(aliasId)?.account ?? aliasId;
   const models: AliasModelDef[] = baseModels.map((m) => {
     const def = deepClone(m) as AliasModelDef & Record<string, unknown>;
-    delete def.provider; // pi's composer sets provider to the alias id
-    delete def.headers; // pi forces extension per-model headers to undefined
+    for (const key of CLONE_DENYLIST) delete def[key];
     return def;
   });
   const config: AliasProviderConfig = {
@@ -301,21 +323,16 @@ export function cachePath(agentDir: string): string {
   return join(agentDir, ALIAS_CACHE_FILENAME);
 }
 
-/** Fields that must never reach the alias cache file. */
-const CACHE_DENYLIST = ["provider", "headers", "apiKey", "oauth", "streamSimple"] as const;
-
 /**
  * Rebuild one cached model for the file: spread-and-delete, mirroring
- * `buildAliasConfig`. Keeping every model field (not an allowlist) means a
- * field pi adds later reaches the Phase-1 registration from the cache with no
- * edit here; the denylist keeps pi-managed and credential-bearing fields off
- * disk. `apiKey`/`oauth`/`streamSimple` are never on a registry model —
- * they are dropped as defence in depth against a caller passing a provider
- * config or a model with injected fields.
+ * `buildAliasConfig` through the same `CLONE_DENYLIST`. Keeping every model
+ * field (not an allowlist) means a field pi adds later reaches the Phase-1
+ * registration from the cache with no edit here; the denylist keeps
+ * pi-managed and credential-bearing fields off disk.
  */
 function sanitizeModel(model: AliasModelDef): AliasModelDef {
   const out = deepClone(model) as AliasModelDef & Record<string, unknown>;
-  for (const key of CACHE_DENYLIST) delete out[key];
+  for (const key of CLONE_DENYLIST) delete out[key];
   return out;
 }
 
@@ -363,8 +380,8 @@ export function readAliasCache(
 
 /**
  * Write the alias model cache atomically (unique tmp + rename). Models are
- * sanitized through the known-field whitelist, so even a caller-passed
- * `apiKey` (or any other secret/extra) never reaches disk.
+ * sanitized through `CLONE_DENYLIST`, so even a caller-passed `apiKey`
+ * (or any other secret/extra) never reaches disk.
  */
 export function writeAliasCache(
   agentDir: string,
