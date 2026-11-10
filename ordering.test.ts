@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { registerCachedAliases, syncAliases } from "./aliases";
 import type {
   AliasCacheEntry,
+  AliasModelDef,
   AliasProviderConfig,
   CloneSourceModel,
 } from "./aliases";
@@ -44,14 +45,14 @@ class FakeRegistry {
   }
 
   modelsOf(provider: string): CloneSourceModel[] {
-    return ((this.providers.get(provider)?.models ?? []) as CloneSourceModel[]).map((m) => ({
+    return (this.providers.get(provider)?.models ?? []).map((m) => ({
       ...m,
       provider,
     }));
   }
 }
 
-function liveModel(overrides: Partial<CloneSourceModel> = {}): CloneSourceModel {
+function liveModel(overrides: Partial<AliasModelDef> = {}): AliasModelDef {
   return {
     id: "model-a",
     name: "Model A",
@@ -90,7 +91,10 @@ describe("Phase-1/Phase-2 ordering (fake registry)", () => {
 
     // Phase 2 — live catalog changed: maxTokens bumped + model added; the
     // stale slot is gone from auth.json.
-    const live = [liveModel({ maxTokens: 16384 }), liveModel({ id: "model-b", name: "Model B" })];
+    const live: CloneSourceModel[] = [
+      { ...liveModel({ maxTokens: 16384 }), provider: "opencode" },
+      { ...liveModel({ id: "model-b", name: "Model B" }), provider: "opencode" },
+    ];
     let written: Record<string, AliasCacheEntry> | undefined;
     const result = syncAliases({
       readAuthKeys: () => ["opencode", "opencode-2"],

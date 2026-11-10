@@ -19,6 +19,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { readAliasCache, writeAliasCache } from "./aliases";
+import type { AliasCacheEntry } from "./aliases";
 
 const state = vi.hoisted(() => ({
   afterTmpWrite: undefined as (() => void) | undefined,
@@ -49,7 +50,7 @@ vi.mock("node:fs", async (importOriginal) => {
 });
 
 /** Minimal cache entry that survives `sanitizeModel`. */
-function entry(modelId: string) {
+function entry(modelId: string): AliasCacheEntry {
   return {
     base: "opencode",
     account: "2",

@@ -16,7 +16,7 @@ import { randomBytes } from "node:crypto";
 import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import type { ModelPromptCache } from "@earendil-works/pi-ai";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ScopedModel } from "@earendil-works/pi-coding-agent";
 
 // ---------------------------------------------------------------------------
@@ -72,41 +72,29 @@ export function groupSiblings(authKeys: string[]): Map<string, string[]> {
 // §3. Alias-config builder (pure)
 // ---------------------------------------------------------------------------
 
-/** Minimal structural view of a live registry model used as a clone source. */
-export interface CloneSourceModel {
-  id: string;
-  name: string;
-  api?: string;
-  baseUrl?: string;
-  reasoning: boolean;
-  thinkingLevelMap?: unknown;
-  input: string[];
-  cost: { input: number; output: number; cacheRead: number; cacheWrite: number; [k: string]: unknown };
-  contextWindow: number;
-  maxTokens: number;
-  samplingParams?: Record<string, unknown>;
-  compat?: Record<string, unknown>;
-  promptCache?: ModelPromptCache;
-  // Tolerate live-registry extras (provider, headers, ...) — never cloned.
-  [key: string]: unknown;
-}
+/**
+ * Clone source: pi's own `Model<Api>`, so a field pi adds later is typed
+ * here automatically; the hand-written mirror of pi's schema is gone.
+ * `provider`/`headers` stay on the source and are deleted by the clone.
+ *
+ * Exact for the source `index.ts` feeds it: `ctx.modelRegistry.getAll()`
+ * is typed `Model<Api>[]` and, per pi's `Models` contract, unqualified
+ * accessors return chat models only (non-chat types live behind
+ * `*OfType`/`getAllModels`), so no cast is needed there.
+ */
+export type CloneSourceModel = Model<Api>;
 
-/** Per-model config for an alias provider registration / cache entry. */
-export interface AliasModelDef {
-  id: string;
-  name: string;
-  api?: string;
-  baseUrl?: string;
-  reasoning: boolean;
-  thinkingLevelMap?: unknown;
-  input: string[];
-  cost: { input: number; output: number; cacheRead: number; cacheWrite: number; [k: string]: unknown };
-  contextWindow: number;
-  maxTokens: number;
-  samplingParams?: Record<string, unknown>;
-  compat?: Record<string, unknown>;
-  promptCache?: ModelPromptCache;
-}
+/**
+ * Per-model config for an alias provider registration / cache entry.
+ *
+ * Derived from pi's `Model<Api>` minus `provider` (pi's composer sets it to
+ * the alias id) and `headers` (pi forces extension per-model headers to
+ * `undefined`). The residual hand-written gap is closed: fields pi adds
+ * later are typed here. The config is structurally assignable to pi's
+ * public `ProviderConfig` input type, so `index.ts` registers it without
+ * a cast (see the NOTE in `buildAliasConfig`).
+ */
+export type AliasModelDef = Omit<Model<Api>, "provider" | "headers">;
 
 /** Provider-level config built for `pi.registerProvider(aliasId, config)`. */
 export interface AliasProviderConfig {
@@ -129,10 +117,19 @@ function deepClone<T>(value: T): T {
   return value;
 }
 
-function shallowClone(value: unknown): unknown {
-  if (value !== null && typeof value === "object" && !Array.isArray(value)) return { ...value };
-  return value;
-}
+/**
+ * Fields that must never be cloned into an alias model — in the registration
+ * config OR the cache file. `provider` is set by pi's composer to the alias
+ * id; `headers` are forced to `undefined` for extension models. The rest
+ * are credential-bearing or transport-only and are never on a registry model;
+ * they are dropped as defence in depth against a caller passing a provider
+ * config or a model with injected fields.
+ *
+ * ONE list, used by both `buildAliasConfig` and `sanitizeModel`: a second
+ * list that drifted is how the allowlist dropped `promptCache` and
+ * `inputLimits` in the first place.
+ */
+const CLONE_DENYLIST = ["provider", "headers", "apiKey", "oauth", "streamSimple"] as const;
 
 /** Provider display name for an alias slot: `"<base> (<account>)"`. */
 export function aliasDisplayName(base: string, account: string): string {
@@ -150,16 +147,22 @@ function uniformApi(models: Array<{ api?: string }>): string | undefined {
 /**
  * Build an alias provider config by per-model cloning the base catalog.
  *
- * Clones exactly: id, name, api, baseUrl, reasoning, input, cost,
- * contextWindow, maxTokens, thinkingLevelMap, samplingParams, compat,
- * promptCache.
- * NEVER sets `apiKey` (alias auth resolves from the alias's own auth.json
- * slot), `streamSimple`, or `oauth`. Per-model `headers` are dropped — pi's
- * provider composition forces extension per-model headers to `undefined`.
+ * Clones EVERY field the live model carries (spread-and-delete), so fields pi
+ * adds later — inputLimits (pi#9631), samplingParamsByThinkingLevel (pi#9776),
+ * and whatever follows — reach aliases with no edit here. A hand-written
+ * allowlist silently dropped promptCache (pi#9668) and inputLimits (pi#9631)
+ * for as long as they existed, because nothing linked it to pi's schema.
+ * Deleted: `CLONE_DENYLIST` — `provider` (pi's composer sets it to the
+ * alias id), `headers` (pi forces extension per-model headers to
+ * `undefined`), and the credential-bearing `apiKey`/`oauth`/`streamSimple`
+ * as defence in depth. Alias auth resolves from the alias's own auth.json
+ * slot, so an `apiKey` on the clone would be both wrong and a leak.
  *
- * NOTE on `samplingParams`: pi's public `ProviderModelConfig` type omits it
- * while the runtime `ProviderConfigInput.models[]` accepts it
- * (provider-composer.ts). Callers pass this config through a structural cast.
+ * NOTE on registration: the config is structurally assignable to pi's
+ * public `ProviderConfig` input type (the derived `Model<Api>` shape is
+ * wider, but structural typing allows it), so `index.ts` registers it
+ * directly. Runtime semantics are what the tests cover; a new pi field
+ * needs no change here.
  */
 export function buildAliasConfig(
   aliasId: string,
@@ -169,21 +172,8 @@ export function buildAliasConfig(
 ): AliasProviderConfig {
   const account = opts?.label ?? parseAliasId(aliasId)?.account ?? aliasId;
   const models: AliasModelDef[] = baseModels.map((m) => {
-    const def: AliasModelDef = {
-      id: m.id,
-      name: m.name,
-      reasoning: m.reasoning,
-      input: [...m.input],
-      cost: deepClone(m.cost),
-      contextWindow: m.contextWindow,
-      maxTokens: m.maxTokens,
-    };
-    if (m.api !== undefined) def.api = m.api;
-    if (m.baseUrl !== undefined) def.baseUrl = m.baseUrl;
-    if (m.thinkingLevelMap !== undefined) def.thinkingLevelMap = shallowClone(m.thinkingLevelMap);
-    if (m.samplingParams !== undefined) def.samplingParams = deepClone(m.samplingParams);
-    if (m.compat !== undefined) def.compat = deepClone(m.compat);
-    if (m.promptCache !== undefined) def.promptCache = deepClone(m.promptCache);
+    const def = deepClone(m) as unknown as AliasModelDef & Record<string, unknown>;
+    for (const key of CLONE_DENYLIST) delete def[key];
     return def;
   });
   const config: AliasProviderConfig = {
@@ -304,23 +294,16 @@ export function cachePath(agentDir: string): string {
   return join(agentDir, ALIAS_CACHE_FILENAME);
 }
 
-/** Rebuild one cached model through the known-field whitelist. */
+/**
+ * Rebuild one cached model for the file: spread-and-delete, mirroring
+ * `buildAliasConfig` through the same `CLONE_DENYLIST`. Keeping every model
+ * field (not an allowlist) means a field pi adds later reaches the Phase-1
+ * registration from the cache with no edit here; the denylist keeps
+ * pi-managed and credential-bearing fields off disk.
+ */
 function sanitizeModel(model: AliasModelDef): AliasModelDef {
-  const out: AliasModelDef = {
-    id: model.id,
-    name: model.name,
-    reasoning: model.reasoning,
-    input: [...model.input],
-    cost: deepClone(model.cost),
-    contextWindow: model.contextWindow,
-    maxTokens: model.maxTokens,
-  };
-  if (model.api !== undefined) out.api = model.api;
-  if (model.baseUrl !== undefined) out.baseUrl = model.baseUrl;
-  if (model.thinkingLevelMap !== undefined) out.thinkingLevelMap = deepClone(model.thinkingLevelMap);
-  if (model.samplingParams !== undefined) out.samplingParams = deepClone(model.samplingParams);
-  if (model.compat !== undefined) out.compat = deepClone(model.compat);
-  if (model.promptCache !== undefined) out.promptCache = deepClone(model.promptCache);
+  const out = deepClone(model) as unknown as AliasModelDef & Record<string, unknown>;
+  for (const key of CLONE_DENYLIST) delete out[key];
   return out;
 }
 
@@ -368,8 +351,8 @@ export function readAliasCache(
 
 /**
  * Write the alias model cache atomically (unique tmp + rename). Models are
- * sanitized through the known-field whitelist, so even a caller-passed
- * `apiKey` (or any other secret/extra) never reaches disk.
+ * sanitized through `CLONE_DENYLIST`, so even a caller-passed `apiKey`
+ * (or any other secret/extra) never reaches disk.
  */
 export function writeAliasCache(
   agentDir: string,
