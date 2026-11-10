@@ -27,7 +27,6 @@ import type {
   AgentBeforeSettleEventResult,
   ExtensionAPI,
   ExtensionContext,
-  ProviderConfig,
 } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
@@ -88,10 +87,7 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
       readCache: () => readAliasCache(agentDir, (m) => log.warn(m)),
       readAuthKeys: () => readAuthKeys(agentDir),
       readSection: (id) => readModelsJsonSection(agentDir, id, (m) => log.warn(m)),
-      // Structural cast: our per-model `samplingParams` is accepted by the
-      // runtime ProviderConfigInput but missing from the public
-      // ProviderModelConfig type (see aliases.ts buildAliasConfig docs).
-      register: (aliasId, config) => pi.registerProvider(aliasId, config as unknown as ProviderConfig),
+      register: (aliasId, config) => pi.registerProvider(aliasId, config),
       warn: (m) => log.warn(m),
       debug: (m) => log.debug(m),
     });
@@ -193,8 +189,7 @@ export default function piFallbackProvider(pi: ExtensionAPI) {
         readAuthKeys: () => readAuthKeys(agentDir),
         getBaseModels: (base) => byProvider.get(base) ?? [],
         readSection: (id) => readModelsJsonSection(agentDir, id, (msg) => log.warn(msg)),
-        // Structural cast: see Phase-1 register for the samplingParams note.
-        register: (aliasId, config) => pi.registerProvider(aliasId, config as unknown as ProviderConfig),
+        register: (aliasId, config) => pi.registerProvider(aliasId, config),
         writeCache: (aliases) => writeAliasCache(agentDir, aliases),
         warn: (m) => log.warn(m),
         debug: (m) => log.debug(m),

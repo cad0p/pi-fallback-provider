@@ -16,7 +16,7 @@ import { randomBytes } from "node:crypto";
 import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import type { ModelPromptCache } from "@earendil-works/pi-ai";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ScopedModel } from "@earendil-works/pi-coding-agent";
 
 // ---------------------------------------------------------------------------
@@ -72,60 +72,27 @@ export function groupSiblings(authKeys: string[]): Map<string, string[]> {
 // §3. Alias-config builder (pure)
 // ---------------------------------------------------------------------------
 
-/** Minimal structural view of a live registry model used as a clone source. */
-export interface CloneSourceModel {
-  id: string;
-  name: string;
-  api?: string;
-  baseUrl?: string;
-  reasoning: boolean;
-  thinkingLevelMap?: unknown;
-  input: string[];
-  cost: { input: number; output: number; cacheRead: number; cacheWrite: number; [k: string]: unknown };
-  contextWindow: number;
-  maxTokens: number;
-  samplingParams?: Record<string, unknown>;
-  compat?: Record<string, unknown>;
-  promptCache?: ModelPromptCache;
-  // Every other live-registry field (inputLimits, samplingParamsByThinkingLevel,
-  // type, ...) rides the index signature: buildAliasConfig clones it unless it
-  // is in the deny set below. Only list a field here when the clone source or
-  // the cache reader needs it typed.
-  [key: string]: unknown;
-}
+/**
+ * Clone source: pi's own `Model<Api>` with one deliberate widening —
+ * `input` is `string[]` because our synthetic fixtures carry plain strings
+ * (real catalogs carry `ModelInputModality[]`). Every other field is pi's
+ * type, so a field pi adds later is typed here automatically; the
+ * hand-written mirror of pi's schema is gone.
+ */
+export type CloneSourceModel = Omit<Model<Api>, "input"> & { input: string[] };
 
 /**
  * Per-model config for an alias provider registration / cache entry.
  *
- * An open record: every field pi adds to a model rides the index signature
- * into the clone (see `buildAliasConfig`), so this stays minimal. Fields the
- * clone source or the cache reader need typed are declared here; everything
- * else is `unknown` and passes through `deepClone`.
+ * Derived from pi's `Model<Api>` minus `provider` (pi's composer sets it to
+ * the alias id) and `headers` (pi forces extension per-model headers to
+ * `undefined`). The residual hand-written gap is closed: fields pi adds
+ * later are typed here, and the only deliberate widening is the clone
+ * source's `input` (see `CloneSourceModel`). The config is structurally
+ * assignable to pi's public `ProviderConfig` input type, so `index.ts`
+ * registers it without a cast (see the NOTE in `buildAliasConfig`).
  */
-export interface AliasModelDef {
-  id: string;
-  name: string;
-  api?: string;
-  baseUrl?: string;
-  reasoning: boolean;
-  // KNOWN TYPE GAP (accepted, documented): `thinkingLevelMap` stays
-  // `unknown` because our synthetic fixture carries an arbitrary nested
-  // value there and pi's `ThinkingLevelMap` rejects it (real catalogs carry
-  // only `string | null`). The index signature is the deliberate residual
-  // gap — passthrough fields are compile-unchecked by design, and `index.ts`
-  // bridges the whole config with a structural cast (see the NOTE in
-  // `buildAliasConfig`). Runtime semantics are covered by the tests; a
-  // future field that needs typing should be declared here.
-  thinkingLevelMap?: unknown;
-  input: string[];
-  cost: { input: number; output: number; cacheRead: number; cacheWrite: number; [k: string]: unknown };
-  contextWindow: number;
-  maxTokens: number;
-  samplingParams?: Record<string, unknown>;
-  compat?: Record<string, unknown>;
-  promptCache?: ModelPromptCache;
-  [key: string]: unknown;
-}
+export type AliasModelDef = Omit<Model<Api>, "provider" | "headers">;
 
 /** Provider-level config built for `pi.registerProvider(aliasId, config)`. */
 export interface AliasProviderConfig {
@@ -189,12 +156,11 @@ function uniformApi(models: Array<{ api?: string }>): string | undefined {
  * as defence in depth. Alias auth resolves from the alias's own auth.json
  * slot, so an `apiKey` on the clone would be both wrong and a leak.
  *
- * NOTE on the structural cast: `index.ts` passes this config through
- * `as unknown as ProviderConfig` because the public `ProviderModelConfig`
- * type omits passthrough fields the runtime `ProviderConfigInput.models[]`
- * accepts — `samplingParams`, `inputLimits`,
- * `samplingParamsByThinkingLevel`, and any field pi adds later. Runtime
- * semantics are what the tests cover; a new pi field needs no change here.
+ * NOTE on registration: the config is structurally assignable to pi's
+ * public `ProviderConfig` input type (the derived `Model<Api>` shape is
+ * wider, but structural typing allows it), so `index.ts` registers it
+ * directly. Runtime semantics are what the tests cover; a new pi field
+ * needs no change here.
  */
 export function buildAliasConfig(
   aliasId: string,

@@ -15,7 +15,7 @@ import {
   writeAliasCache,
 } from "./aliases";
 import type { Phase1Deps, SyncAliasesDeps } from "./aliases";
-import type { AliasProviderConfig, CloneSourceModel } from "./aliases";
+import type { AliasCacheEntry, AliasModelDef, AliasProviderConfig, CloneSourceModel } from "./aliases";
 
 describe("parseAliasId", () => {
   it("splits at the first -<digits> boundary, keeping the rest as account", () => {
@@ -80,17 +80,23 @@ function fauxCatalog(): CloneSourceModel[] {
       name: "Model A",
       api: "anthropic-messages",
       baseUrl: "https://api.example.com",
+      provider: "opencode",
       reasoning: true,
-      thinkingLevelMap: { low: "low", high: { nested: true } },
+      thinkingLevelMap: { low: "low", high: "high" },
       input: ["text", "image"],
-      cost: { input: 1, output: 2, cacheRead: 0.5, cacheWrite: 1, tiers: [{ ghi: 1 }] },
+      cost: {
+        input: 1,
+        output: 2,
+        cacheRead: 0.5,
+        cacheWrite: 1,
+        tiers: [{ inputTokensAbove: 1_000_000, input: 2, output: 3, cacheRead: 0.5, cacheWrite: 1 }],
+      },
       contextWindow: 200000,
       maxTokens: 16384,
       samplingParams: { temperature: 0.7 },
-      compat: { foo: "bar" },
+      compat: { supportsStrictTools: true },
       promptCache: { short: 300, long: 3600 },
       inputLimits: { maxRequestBytes: 33554432, images: { maxPerRequest: 600, resize: { maxWidth: 2000 } } },
-      provider: "opencode",
       headers: { "x-secret": "drop-me" },
     },
     {
@@ -98,6 +104,7 @@ function fauxCatalog(): CloneSourceModel[] {
       name: "Model B",
       api: "anthropic-messages",
       baseUrl: "https://api.example.com",
+      provider: "opencode",
       reasoning: false,
       input: ["text"],
       cost: { input: 3, output: 4, cacheRead: 0, cacheWrite: 0 },
@@ -120,13 +127,19 @@ describe("buildAliasConfig", () => {
       api: "anthropic-messages",
       baseUrl: "https://api.example.com",
       reasoning: true,
-      thinkingLevelMap: { low: "low", high: { nested: true } },
+      thinkingLevelMap: { low: "low", high: "high" },
       input: ["text", "image"],
-      cost: { input: 1, output: 2, cacheRead: 0.5, cacheWrite: 1, tiers: [{ ghi: 1 }] },
+      cost: {
+        input: 1,
+        output: 2,
+        cacheRead: 0.5,
+        cacheWrite: 1,
+        tiers: [{ inputTokensAbove: 1_000_000, input: 2, output: 3, cacheRead: 0.5, cacheWrite: 1 }],
+      },
       contextWindow: 200000,
       maxTokens: 16384,
       samplingParams: { temperature: 0.7 },
-      compat: { foo: "bar" },
+      compat: { supportsStrictTools: true },
       promptCache: { short: 300, long: 3600 },
       inputLimits: { maxRequestBytes: 33554432, images: { maxPerRequest: 600, resize: { maxWidth: 2000 } } },
     });
@@ -177,13 +190,13 @@ describe("buildAliasConfig", () => {
     (clone.input as string[]).push("video");
     (clone.cost as Record<string, unknown>).input = 999;
     (clone.samplingParams as Record<string, unknown>).temperature = 0;
-    (clone.compat as Record<string, unknown>).foo = "mutated";
+    (clone.compat as Record<string, unknown>).supportsStrictTools = false;
     (clone.promptCache as Record<string, number>).short = 1;
     ((clone.inputLimits as Record<string, unknown>).images as Record<string, unknown>).maxPerRequest = 1;
     expect(base[0].input).toEqual(["text", "image"]);
     expect(base[0].cost.input).toBe(1);
     expect(base[0].samplingParams).toEqual({ temperature: 0.7 });
-    expect(base[0].compat).toEqual({ foo: "bar" });
+    expect(base[0].compat).toEqual({ supportsStrictTools: true });
     expect(base[0].promptCache).toEqual({ short: 300, long: 3600 });
     expect(base[0].inputLimits).toEqual({
       maxRequestBytes: 33554432,
@@ -191,14 +204,15 @@ describe("buildAliasConfig", () => {
     });
   });
 
-  it("deep-copies thinkingLevelMap (spread clone decouples nested values)", () => {
+  it("deep-copies thinkingLevelMap (spread clone decouples the map object)", () => {
     const base = fauxCatalog();
     const config = buildAliasConfig("opencode-2", "opencode", base);
     expect(config.models![0].thinkingLevelMap).toEqual(base[0].thinkingLevelMap);
     expect(config.models![0].thinkingLevelMap).not.toBe(base[0].thinkingLevelMap);
-    expect(
-      (config.models![0].thinkingLevelMap as Record<string, unknown>).high,
-    ).not.toBe((base[0].thinkingLevelMap as Record<string, unknown>).high);
+    // pi's ThinkingLevelMap values are string | null, so the deepest
+    // isolation we can assert is the map object itself plus a level write.
+    (config.models![0].thinkingLevelMap as Record<string, unknown>).low = "mutated";
+    expect(base[0].thinkingLevelMap?.low).toBe("low");
   });
 
   it("inherits fields pi adds later and drops only the deny set (spread-and-delete)", () => {
@@ -319,7 +333,7 @@ describe("alias model cache", () => {
     return mkdtempSync(join(tmpdir(), "pi-fallback-cache-"));
   }
 
-  function cacheEntry() {
+  function cacheEntry(): AliasCacheEntry {
     return {
       base: "opencode",
       account: "2",
@@ -335,7 +349,7 @@ describe("alias model cache", () => {
           contextWindow: 100000,
           maxTokens: 8192,
           samplingParams: { temperature: 0.5 },
-          compat: { foo: "bar" },
+          compat: { supportsStrictTools: true },
           promptCache: { short: 300, long: 3600 },
           inputLimits: { maxRequestBytes: 33554432 },
         },
@@ -349,7 +363,7 @@ describe("alias model cache", () => {
     const back = readAliasCache(dir);
     expect(back["opencode-2"]).toEqual(cacheEntry());
     expect(back["opencode-2"].models[0].samplingParams).toEqual({ temperature: 0.5 });
-    expect(back["opencode-2"].models[0].compat).toEqual({ foo: "bar" });
+    expect(back["opencode-2"].models[0].compat).toEqual({ supportsStrictTools: true });
     expect(back["opencode-2"].models[0].promptCache).toEqual({ short: 300, long: 3600 });
     expect(back["opencode-2"].models[0].inputLimits).toEqual({ maxRequestBytes: 33554432 });
   });
@@ -399,7 +413,7 @@ describe("alias model cache", () => {
 });
 
 describe("registerCachedAliases (Phase 1)", () => {
-  const cached = {
+  const cached: Record<string, AliasCacheEntry> = {
     "opencode-2": {
       base: "opencode",
       account: "2",
@@ -487,6 +501,7 @@ describe("syncAliases (Phase 2)", () => {
       name: "Model A",
       api: "anthropic-messages",
       baseUrl: "https://api.example.com",
+      provider: "opencode",
       reasoning: false,
       input: ["text"],
       cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
@@ -579,5 +594,34 @@ describe("syncAliases (Phase 2)", () => {
     expect(seen).toEqual(["opencode-2-work"]);
     expect(Object.keys(t2.written ?? {})).toEqual(["opencode-2-work"]);
     expect(t2.warnings).toHaveLength(1);
+  });
+});
+
+describe("type derivation from pi's Model<Api>", () => {
+  // These `@ts-expect-error` directives are the pin: if CloneSourceModel or
+  // AliasModelDef ever revert to a hand-written mirror with an index
+  // signature, the illegal assignments below become legal, the directives go
+  // unused, and `pnpm check` fails. The runtime assertions are deliberately
+  // trivial — the compile-time checks are the test.
+  it("pins the derived types: pi-typed fields are checked, provider/headers omitted", () => {
+    const base = fauxCatalog();
+    // @ts-expect-error `inputLimits` is pi's ModelInputLimits, not an arbitrary record
+    base[0].inputLimits = { nope: true };
+    // @ts-expect-error `thinkingLevelMap` values are string | null
+    base[0].thinkingLevelMap = { high: { nested: true } };
+    // @ts-expect-error cost tiers need inputTokensAbove plus the four rates
+    base[0].cost = { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, tiers: [{ ghi: 1 }] };
+    // @ts-expect-error `compat` is pi's closed compat union
+    base[0].compat = { foo: "bar" };
+    // @ts-expect-error `provider` is omitted from AliasModelDef (pi's composer sets it)
+    const alias: AliasModelDef = { ...base[0], provider: "opencode" };
+    // @ts-expect-error the clone source's `input` widening does not extend to AliasModelDef
+    const widenedInput: AliasModelDef = { ...base[0], input: ["anything"] };
+    const { provider: _provider, ...withoutProvider } = base[0];
+    // @ts-expect-error CloneSourceModel keeps pi's required `provider`
+    const missingProvider: CloneSourceModel = withoutProvider;
+    expect(alias).toBeDefined();
+    expect(widenedInput).toBeDefined();
+    expect(missingProvider).toBeDefined();
   });
 });
