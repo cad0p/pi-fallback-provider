@@ -21,6 +21,7 @@ All notable changes to this project will be documented in this file.
 - Apply the scoped thinking level after a fallback switch (closes #27)
 - Keep the round-robin cursor per session (closes #31)
 - Clone promptCache into alias models (closes #33)
+- Clone alias models by spread-and-delete, not an allowlist (closes #35)
 
 ### 🚜 Refactor
 
